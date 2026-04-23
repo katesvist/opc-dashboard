@@ -1,0 +1,17 @@
+[project]
+name = "opc-ua-client-dashboard"
+version = "0.1.0"
+description = "Read-only dashboard for opc-ua-client-service"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi>=0.115.0,<1.0.0",
+    "uvicorn[standard]>=0.32.0,<1.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

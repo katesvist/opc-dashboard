@@ -1,0 +1,18 @@
+services:
+  opcua-dashboard:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: ${DASHBOARD_BASE_IMAGE:-python:3.12-slim}
+    restart: unless-stopped
+    environment:
+      OPC_CLIENT_BASE_URL: ${OPC_CLIENT_BASE_URL:-http://host.docker.internal:8080}
+      OPC_CLIENT_TOKEN: ${OPC_CLIENT_TOKEN:-secret-token}
+      RABBITMQ_MANAGEMENT_URL: ${RABBITMQ_MANAGEMENT_URL:-http://host.docker.internal:15672}
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+      RABBITMQ_QUEUE: ${RABBITMQ_QUEUE:-opcua.parameter.events}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8090:8090"

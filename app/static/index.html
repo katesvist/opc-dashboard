@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OPC UA Client Dashboard</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <header class="topbar">
+        <div>
+          <h1>OPC UA Client Dashboard</h1>
+          <p id="clientUrl">client api</p>
+        </div>
+        <div class="topbar-actions">
+          <span id="readyBadge" class="badge badge-muted">checking</span>
+          <span id="readyHint" class="muted">ready: -</span>
+          <span id="updatedAt" class="muted">нет данных</span>
+          <button id="refreshButton" class="btn primary" type="button">Обновить</button>
+        </div>
+      </header>
+
+      <section class="summary">
+        <div class="summary-item">
+          <span>Endpoint</span>
+          <strong id="endpointCount">0</strong>
+          <small id="connectedCount">0 connected</small>
+        </div>
+        <div class="summary-item">
+          <span>Nodes</span>
+          <strong id="nodeCount">0</strong>
+          <small id="activeNodeCount">0 active</small>
+        </div>
+        <div class="summary-item">
+          <span>Buffer</span>
+          <strong id="bufferCount">0</strong>
+          <small id="deadLetterCount">0 dead-letter</small>
+        </div>
+        <div class="summary-item">
+          <span>RabbitMQ</span>
+          <strong id="rabbitMessages">0</strong>
+          <small id="rabbitDetails">0 ready / 0 unacked</small>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <h2>API клиента</h2>
+          <p>Кнопки вызывают API клиента через proxy стенда. Обязательные поля указаны на кнопке и проверяются до отправки.</p>
+        </div>
+        <div class="api-grid">
+          <div>
+            <h3>Технические</h3>
+            <div id="technicalApiButtons" class="button-grid"></div>
+          </div>
+          <div>
+            <h3>Функциональные</h3>
+            <div id="functionalApiButtons" class="button-grid"></div>
+          </div>
+        </div>
+        <div class="form-grid">
+          <label>
+            Endpoint
+            <select id="apiEndpoint"></select>
+          </label>
+          <label>
+            NodeId
+            <input id="apiNodeId" type="text" placeholder='ns=3;s="DB"."Node"' />
+          </label>
+          <label>
+            Value для write
+            <input id="apiValue" type="text" placeholder="например 12.5 или Z" />
+          </label>
+          <label>
+            Depth
+            <input id="apiDepth" type="number" min="0" max="5" value="1" />
+          </label>
+        </div>
+        <pre id="apiResult" class="response-box">Выберите API-запрос.</pre>
+      </section>
+
+      <section class="two-columns">
+        <section class="panel">
+          <div class="panel-title">
+            <h2>Подключения</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Endpoint</th>
+                  <th>State</th>
+                  <th>Last data</th>
+                  <th>Reconnects</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody id="connectionsTable"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title inline-title">
+          <div>
+            <h2>Ноды и значения</h2>
+            <p>Значения берутся через read только для active-ноды. Клик по строке подставляет endpoint и node id в форму API.</p>
+          </div>
+          <input id="nodeFilter" class="filter" type="search" placeholder="Фильтр по коду, node id, endpoint..." />
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Parameter</th>
+                <th>NodeId</th>
+                <th>Endpoint</th>
+                <th>Mode</th>
+                <th>Value</th>
+                <th>Quality</th>
+                <th>Source time</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="nodesTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>
