@@ -42,6 +42,7 @@ http://127.0.0.1:8090
 ```text
 OPC_CLIENT_BASE_URL=http://host.docker.internal:8080
 OPC_CLIENT_TOKEN=secret-token
+OPC_CLIENT_TIMEOUT_SECONDS=15
 DASHBOARD_PORT=8090
 ```
 

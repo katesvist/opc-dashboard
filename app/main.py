@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 from base64 import b64encode
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -26,7 +27,7 @@ STATIC_DIR = BASE_DIR / "static"
 class ClientSettings:
     base_url: str
     token: str | None
-    timeout_seconds: float = 5.0
+    timeout_seconds: float = 15.0
     rabbitmq_management_url: str | None = None
     rabbitmq_user: str = "guest"
     rabbitmq_password: str = "guest"
@@ -38,7 +39,7 @@ class ClientSettings:
         return cls(
             base_url=os.getenv("OPC_CLIENT_BASE_URL", "http://127.0.0.1:8080").rstrip("/"),
             token=os.getenv("OPC_CLIENT_TOKEN") or None,
-            timeout_seconds=float(os.getenv("OPC_CLIENT_TIMEOUT_SECONDS", "5")),
+            timeout_seconds=float(os.getenv("OPC_CLIENT_TIMEOUT_SECONDS", "15")),
             rabbitmq_management_url=(
                 os.getenv("RABBITMQ_MANAGEMENT_URL", "http://host.docker.internal:15672").rstrip("/")
             ),
@@ -86,6 +87,11 @@ class OpcClientApi:
                 status_code=502,
                 detail=f"OPC UA client API is unavailable: {exc.reason}",
             ) from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise HTTPException(
+                status_code=504,
+                detail=f"OPC UA client API timed out after {self.settings.timeout_seconds:g}s.",
+            ) from exc
 
     def _headers(self, *, has_body: bool) -> dict[str, str]:
         headers = {"Accept": "application/json"}
@@ -101,7 +107,10 @@ class OpcClientApi:
         text = raw.decode("utf-8")
         if "application/json" not in content_type:
             return text
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
 
 
 class RabbitMqApi:
@@ -254,6 +263,13 @@ async def client_request(payload: ClientApiRequest) -> dict[str, Any]:
             "operation": payload.operation,
             "status_code": exc.status_code,
             "response": exc.detail,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "operation": payload.operation,
+            "status_code": 500,
+            "response": str(exc),
         }
 
 

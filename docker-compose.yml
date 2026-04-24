@@ -8,6 +8,7 @@ services:
     environment:
       OPC_CLIENT_BASE_URL: ${OPC_CLIENT_BASE_URL:-http://host.docker.internal:8080}
       OPC_CLIENT_TOKEN: ${OPC_CLIENT_TOKEN:-secret-token}
+      OPC_CLIENT_TIMEOUT_SECONDS: ${OPC_CLIENT_TIMEOUT_SECONDS:-15}
       RABBITMQ_MANAGEMENT_URL: ${RABBITMQ_MANAGEMENT_URL:-http://host.docker.internal:15672}
       RABBITMQ_USER: ${RABBITMQ_USER:-guest}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
