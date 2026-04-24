@@ -15,12 +15,17 @@
 
 ## Быстрый запуск рядом с Docker-клиентом
 
-Сначала подними сам OPC UA client из его репозитория
-
-Затем подними dashboard из его репо:
+Сначала подними сам OPC UA client из его репозитория:
 
 ```powershell
-cd ~\opc-ua-client-dashboard
+cd C:\Users\e.kanarskaya\Desktop\opc-ua-client-service-dev
+docker compose -f .\docker-compose.server.yml up --build -d
+```
+
+Затем подними dashboard из этой папки:
+
+```powershell
+cd C:\Users\e.kanarskaya\Desktop\opc-ua-client-dashboard
 docker compose up --build -d
 ```
 

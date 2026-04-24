@@ -305,7 +305,8 @@ tbody tr:hover {
 .mono,
 .node-id,
 .value,
-.response-box {
+.response-box,
+.tree-node-id {
   font-family: var(--mono);
 }
 
@@ -331,6 +332,101 @@ tbody tr:hover {
   background: #111815;
   font-size: 12px;
   white-space: pre-wrap;
+}
+
+.tree-panel {
+  max-height: 420px;
+  overflow: auto;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.tree-empty {
+  padding: 12px;
+  color: var(--muted);
+}
+
+.tree-list {
+  display: grid;
+}
+
+.tree-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 6px;
+  align-items: start;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tree-row:last-child {
+  border-bottom: 0;
+}
+
+.tree-row:hover {
+  background: #f7faf6;
+}
+
+.tree-toggle {
+  width: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.tree-toggle:hover {
+  color: var(--blue);
+  border: 0;
+  background: transparent;
+}
+
+.tree-spacer {
+  width: 22px;
+  min-height: 22px;
+}
+
+.tree-content {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tree-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tree-name {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.tree-class {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.tree-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tree-node-id {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  font-size: 11px;
 }
 
 @media (max-width: 980px) {

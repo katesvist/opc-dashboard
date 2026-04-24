@@ -2,6 +2,8 @@ const state = {
   snapshot: null,
   operations: [],
   filter: "",
+  browseItems: [],
+  browseExpanded: new Set(),
 };
 
 const formatDate = (value) => {
@@ -157,10 +159,28 @@ async function runOperation(operation) {
       body: JSON.stringify(payload),
     });
     result.textContent = pretty(response);
+    if (operation.id === "browse" && response.ok && Array.isArray(response.response)) {
+      applyBrowseResult(payload, response.response);
+    }
     await fetchSnapshot();
   } catch (error) {
     result.textContent = error.message;
   }
+}
+
+function applyBrowseResult(payload, items) {
+  state.browseItems = items;
+  state.browseExpanded = new Set(
+    items
+      .filter((item) => item.has_children && Number(item.depth ?? 0) < 2)
+      .map((item) => item.node_id),
+  );
+  const nodeInfo = payload.node_id ? `, стартовый узел: ${payload.node_id}` : "";
+  setText(
+    "browseTreeMeta",
+    `Endpoint: ${payload.endpoint_id}${nodeInfo}, depth: ${payload.max_depth}, узлов: ${items.length}`,
+  );
+  renderBrowseTree();
 }
 
 function buildOperationPayload(operation) {
@@ -239,6 +259,92 @@ function renderConnections(connections) {
   }
 }
 
+function renderBrowseTree() {
+  const root = document.getElementById("browseTree");
+  const items = state.browseItems;
+
+  if (!items.length) {
+    root.innerHTML = `<div class="tree-empty">Нажмите Browse, чтобы загрузить дерево.</div>`;
+    return;
+  }
+
+  const byParent = new Map();
+  for (const item of items) {
+    const key = item.parent_node_id ?? "__root__";
+    const bucket = byParent.get(key) || [];
+    bucket.push(item);
+    byParent.set(key, bucket);
+  }
+
+  const renderBranch = (parentId, level) => {
+    const nodes = byParent.get(parentId) || [];
+    return nodes
+      .map((item) => {
+        const children = byParent.get(item.node_id) || [];
+        const expandable = children.length > 0;
+        const expanded = state.browseExpanded.has(item.node_id);
+        const label = item.display_name || item.browse_name || item.node_id;
+        const meta = [];
+        if (item.node_class) meta.push(item.node_class);
+        if (item.data_type) meta.push(item.data_type);
+        if (item.access_level?.length) meta.push(item.access_level.join(", "));
+
+        return `
+          <div class="tree-row" style="padding-left: ${8 + level * 18}px">
+            ${
+              expandable
+                ? `<button class="tree-toggle" type="button" data-node-id="${escapeHtml(item.node_id)}">${expanded ? "−" : "+"}</button>`
+                : `<span class="tree-spacer"></span>`
+            }
+            <div class="tree-content" data-select-node-id="${escapeHtml(item.node_id)}" data-select-endpoint-id="${escapeHtml(document.getElementById("apiEndpoint").value || "")}">
+              <div class="tree-title">
+                <span class="tree-name">${escapeHtml(label)}</span>
+                <span class="tree-class">${escapeHtml(item.node_class || "")}</span>
+              </div>
+              <div class="tree-meta">${meta.map((part) => `<span>${escapeHtml(part)}</span>`).join("")}</div>
+              <div class="tree-node-id">${escapeHtml(item.node_id)}</div>
+            </div>
+          </div>
+          ${expandable && expanded ? renderBranch(item.node_id, level + 1) : ""}
+        `;
+      })
+      .join("");
+  };
+
+  root.innerHTML = `<div class="tree-list">${renderBranch("__root__", 0)}</div>`;
+
+  for (const button of root.querySelectorAll("[data-node-id]")) {
+    button.addEventListener("click", (event) => {
+      const nodeId = event.currentTarget.dataset.nodeId;
+      if (!nodeId) return;
+      if (state.browseExpanded.has(nodeId)) {
+        state.browseExpanded.delete(nodeId);
+      } else {
+        state.browseExpanded.add(nodeId);
+      }
+      renderBrowseTree();
+    });
+  }
+
+  for (const element of root.querySelectorAll("[data-select-node-id]")) {
+    element.addEventListener("click", (event) => {
+      const nodeId = event.currentTarget.dataset.selectNodeId;
+      const endpointId = event.currentTarget.dataset.selectEndpointId;
+      if (endpointId) document.getElementById("apiEndpoint").value = endpointId;
+      if (nodeId) document.getElementById("apiNodeId").value = nodeId;
+    });
+  }
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function renderNodes(nodes) {
   const table = document.getElementById("nodesTable");
   const query = state.filter.trim().toLowerCase();
@@ -298,6 +404,8 @@ Promise.all([loadOperations(), fetchSnapshot()]).catch((error) => {
   readyBadge.textContent = "error";
   setText("updatedAt", error.message);
 });
+
+renderBrowseTree();
 
 setInterval(() => {
   fetchSnapshot().catch(() => undefined);
