@@ -28,7 +28,7 @@ class ClientSettings:
     base_url: str
     token: str | None
     params_service_base_url: str
-    timeout_seconds: float = 15.0
+    timeout_seconds: float = 300.0
     rabbitmq_management_url: str | None = None
     rabbitmq_user: str = "guest"
     rabbitmq_password: str = "guest"
@@ -41,7 +41,7 @@ class ClientSettings:
             base_url=os.getenv("OPC_CLIENT_BASE_URL", "http://127.0.0.1:8080").rstrip("/"),
             token=os.getenv("OPC_CLIENT_TOKEN") or None,
             params_service_base_url=os.getenv("PARAMS_SERVICE_BASE_URL", "http://127.0.0.1:8000").rstrip("/"),
-            timeout_seconds=float(os.getenv("OPC_CLIENT_TIMEOUT_SECONDS", "15")),
+            timeout_seconds=float(os.getenv("OPC_CLIENT_TIMEOUT_SECONDS", "300")),
             rabbitmq_management_url=(
                 os.getenv("RABBITMQ_MANAGEMENT_URL", "http://host.docker.internal:15672").rstrip("/")
             ),
