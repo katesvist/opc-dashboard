@@ -189,6 +189,16 @@ button:hover {
   display: none !important;
 }
 
+.config-page {
+  padding: 14px;
+}
+
+.config-hero {
+  align-items: center;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
 .api-button {
   min-width: 120px;
   text-align: left;
@@ -230,13 +240,22 @@ label {
 input,
 select {
   width: 100%;
-  min-height: 32px;
+  height: 36px;
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 6px 8px;
   color: var(--text);
   background: #fff;
   font: inherit;
+}
+
+select {
+  appearance: none;
+  padding-right: 30px;
+  background:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%) calc(100% - 16px) 15px / 6px 6px no-repeat,
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%) calc(100% - 10px) 15px / 6px 6px no-repeat,
+    #fff;
 }
 
 .field-error {
@@ -443,19 +462,72 @@ tbody tr:hover {
   font-size: 11px;
 }
 
+.config-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.step-card {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 82px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--panel-soft);
+}
+
+.step-number {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--blue);
+  font-weight: 800;
+}
+
+.step-card strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.step-card p,
+.column-title p {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.config-status-row {
+  margin-bottom: 12px;
+}
+
+.config-status {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  color: var(--muted);
+  background: #fff;
+  white-space: pre-wrap;
+}
+
 .config-toolbar {
   display: grid;
-  grid-template-columns: 1fr 2fr 90px 2fr auto;
-  gap: 8px;
+  grid-template-columns: minmax(180px, 1fr) minmax(280px, 2fr) 110px auto;
+  gap: 10px;
   align-items: end;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .mapping-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
-  gap: 10px;
-  margin-top: 10px;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 12px;
 }
 
 .mapping-column {
@@ -479,11 +551,21 @@ tbody tr:hover {
   background: var(--panel-soft);
 }
 
+.column-title h3 {
+  margin-bottom: 2px;
+}
+
 .mapping-tree {
   max-height: 610px;
   margin-top: 0;
   border: 0;
   border-radius: 0;
+}
+
+.dictionary-tools {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 10px;
+  background: #fff;
 }
 
 .tree-content[draggable="true"] {
@@ -563,6 +645,7 @@ tbody tr:hover {
   .api-grid,
   .form-grid,
   .two-columns,
+  .config-steps,
   .config-toolbar,
   .mapping-layout {
     grid-template-columns: 1fr;

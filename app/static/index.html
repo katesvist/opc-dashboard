@@ -23,7 +23,7 @@
         </div>
       </header>
 
-      <section class="summary">
+      <section class="summary page-section" data-page="dashboard">
         <div class="summary-item">
           <span>Endpoint</span>
           <strong id="endpointCount">0</strong>
@@ -140,21 +140,49 @@
         </div>
       </section>
 
-      <section class="panel page-section hidden" data-page="config">
-        <div class="panel-title inline-title">
+      <section class="panel config-page page-section hidden" data-page="config">
+        <div class="panel-title inline-title config-hero">
           <div>
             <h2>Настройка привязки нод</h2>
-            <p>Слева дерево OPC UA, справа справочник параметров. Перетащите variable-ноду на параметр и сохраните конфигурацию клиента.</p>
+            <p>Загрузите текущую конфигурацию клиента и справочник параметров, выполните Browse, затем перетащите variable-ноду на нужный параметр.</p>
           </div>
           <div class="topbar-actions">
-            <button id="loadConfigButton" class="btn" type="button">Загрузить</button>
-            <button id="saveConfigButton" class="btn primary" type="button">Сохранить</button>
+            <button id="loadConfigButton" class="btn" type="button">Обновить данные</button>
+            <button id="saveConfigButton" class="btn primary" type="button">Сохранить в клиент</button>
           </div>
+        </div>
+
+        <div class="config-steps">
+          <article class="step-card">
+            <span class="step-number">1</span>
+            <div>
+              <strong>Данные для привязки</strong>
+              <p>Кнопка выше загружает текущие ноды клиента и справочник из сервиса параметров.</p>
+            </div>
+          </article>
+          <article class="step-card">
+            <span class="step-number">2</span>
+            <div>
+              <strong>Browse OPC UA</strong>
+              <p>Выберите endpoint, стартовый узел и глубину, чтобы получить дерево нод.</p>
+            </div>
+          </article>
+          <article class="step-card">
+            <span class="step-number">3</span>
+            <div>
+              <strong>Привязка</strong>
+              <p>Перетащите variable-ноду на карточку параметра или выберите ноду кликом и нажмите на параметр.</p>
+            </div>
+          </article>
+        </div>
+
+        <div class="config-status-row">
+          <div id="configStatus" class="config-status">Данные еще не загружены.</div>
         </div>
 
         <div class="config-toolbar">
           <label>
-            Endpoint
+            Endpoint для Browse
             <select id="configEndpoint"></select>
           </label>
           <label>
@@ -165,19 +193,16 @@
             Depth
             <input id="configDepth" type="number" min="0" max="5" value="2" />
           </label>
-          <label>
-            Фильтр справочника
-            <input id="dictFilter" type="search" placeholder="Наименование, описание, единица..." />
-          </label>
-          <button id="configBrowseButton" class="btn" type="button">Browse</button>
+          <button id="configBrowseButton" class="btn primary" type="button">Загрузить дерево</button>
         </div>
-
-        <div id="configStatus" class="muted">Конфигурация еще не загружена.</div>
 
         <div class="mapping-layout">
           <section class="mapping-column">
             <div class="column-title">
-              <h3>OPC UA дерево</h3>
+              <div>
+                <h3>OPC UA дерево</h3>
+                <p>Доступные variable-ноды можно перетаскивать.</p>
+              </div>
               <span id="configBrowseMeta" class="muted">Нет browse-данных</span>
             </div>
             <div id="configBrowseTree" class="tree-panel mapping-tree"></div>
@@ -185,8 +210,14 @@
 
           <section class="mapping-column">
             <div class="column-title">
-              <h3>Справочник параметров</h3>
+              <div>
+                <h3>Справочник параметров</h3>
+                <p>Подтягивается из сервиса параметров автоматически и по кнопке «Обновить данные».</p>
+              </div>
               <span id="dictMeta" class="muted">0 параметров</span>
+            </div>
+            <div class="dictionary-tools">
+              <input id="dictFilter" type="search" placeholder="Фильтр: код, описание, тип, единица..." />
             </div>
             <div id="dictionaryList" class="dictionary-list"></div>
           </section>

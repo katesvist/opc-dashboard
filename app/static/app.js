@@ -44,6 +44,11 @@ const pretty = (value) => {
   return JSON.stringify(value, null, 2);
 };
 
+const clone = (value) => {
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
+};
+
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, { cache: "no-store", ...options });
   const contentType = response.headers.get("content-type") || "";
@@ -411,17 +416,31 @@ function switchPage(page) {
 }
 
 async function loadConfigurationPage() {
-  const [config, dictionary] = await Promise.all([
+  setText("configStatus", "Загружаю текущую конфигурацию клиента и справочник параметров...");
+  const [configResult, dictionaryResult] = await Promise.allSettled([
     fetchJson("/api/config/nodes"),
     fetchJson("/api/dictionary"),
   ]);
-  state.configNodes = Array.isArray(config.nodes) ? config.nodes : [];
-  state.draftNodes = structuredClone(state.configNodes);
-  state.dictionary = Array.isArray(dictionary.params) ? dictionary.params : [];
-  setText(
-    "configStatus",
-    `Клиент: ${state.snapshot?.client?.base_url || "-"}, сервис параметров: ${state.snapshot?.client?.params_service_base_url || dictionary.base_url || "-"}`,
-  );
+
+  const messages = [];
+  if (configResult.status === "fulfilled") {
+    state.configNodes = Array.isArray(configResult.value.nodes) ? configResult.value.nodes : [];
+    state.draftNodes = clone(state.configNodes);
+    messages.push(`Конфигурация клиента: ${state.draftNodes.length} нод`);
+  } else {
+    messages.push(`Конфигурация клиента не загружена: ${configResult.reason.message}`);
+  }
+
+  if (dictionaryResult.status === "fulfilled") {
+    state.dictionary = Array.isArray(dictionaryResult.value.params) ? dictionaryResult.value.params : [];
+    messages.push(`Справочник параметров: ${state.dictionary.length} параметров`);
+    messages.push(`Сервис параметров: ${dictionaryResult.value.base_url || state.snapshot?.client?.params_service_base_url || "-"}`);
+  } else {
+    messages.push(`Справочник не загружен: ${dictionaryResult.reason.message}`);
+  }
+
+  messages.push(`OPC UA клиент: ${state.snapshot?.client?.base_url || "-"}`);
+  setText("configStatus", messages.join("\n"));
   renderDictionary();
   renderMappings();
 }
@@ -688,7 +707,7 @@ async function saveConfiguration() {
     body: JSON.stringify({ nodes: state.draftNodes }),
   });
   state.configNodes = Array.isArray(response.nodes) ? response.nodes : state.draftNodes;
-  state.draftNodes = structuredClone(state.configNodes);
+  state.draftNodes = clone(state.configNodes);
   setText("configStatus", pretty(response.results || response));
   renderMappings();
   renderDictionary();
@@ -740,6 +759,8 @@ document.getElementById("saveConfigButton").addEventListener("click", () => {
 document.getElementById("configBrowseButton").addEventListener("click", () => {
   browseForConfig().catch((error) => setText("configStatus", error.message));
 });
+
+switchPage(state.activePage);
 
 Promise.all([loadOperations(), fetchSnapshot()]).catch((error) => {
   const readyBadge = document.getElementById("readyBadge");
