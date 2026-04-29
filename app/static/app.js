@@ -2,8 +2,16 @@ const state = {
   snapshot: null,
   operations: [],
   filter: "",
+  dictFilter: "",
   browseItems: [],
   browseExpanded: new Set(),
+  configBrowseItems: [],
+  configBrowseExpanded: new Set(),
+  dictionary: [],
+  configNodes: [],
+  draftNodes: [],
+  selectedBrowseNode: null,
+  activePage: "dashboard",
 };
 
 const formatDate = (value) => {
@@ -89,7 +97,7 @@ function render() {
 }
 
 function renderEndpointOptions(connections) {
-  for (const id of ["apiEndpoint"]) {
+  for (const id of ["apiEndpoint", "configEndpoint"]) {
     const select = document.getElementById(id);
     const current = select.value;
     select.innerHTML = "";
@@ -392,10 +400,345 @@ function renderNodes(nodes) {
   }
 }
 
+function switchPage(page) {
+  state.activePage = page;
+  for (const section of document.querySelectorAll("[data-page]")) {
+    section.classList.toggle("hidden", section.dataset.page !== page);
+  }
+  for (const button of document.querySelectorAll("[data-page-target]")) {
+    button.classList.toggle("active", button.dataset.pageTarget === page);
+  }
+}
+
+async function loadConfigurationPage() {
+  const [config, dictionary] = await Promise.all([
+    fetchJson("/api/config/nodes"),
+    fetchJson("/api/dictionary"),
+  ]);
+  state.configNodes = Array.isArray(config.nodes) ? config.nodes : [];
+  state.draftNodes = structuredClone(state.configNodes);
+  state.dictionary = Array.isArray(dictionary.params) ? dictionary.params : [];
+  setText(
+    "configStatus",
+    `Клиент: ${state.snapshot?.client?.base_url || "-"}, сервис параметров: ${state.snapshot?.client?.params_service_base_url || dictionary.base_url || "-"}`,
+  );
+  renderDictionary();
+  renderMappings();
+}
+
+async function browseForConfig() {
+  const endpointId = document.getElementById("configEndpoint").value;
+  const nodeId = document.getElementById("configNodeId").value.trim();
+  const depth = Number(document.getElementById("configDepth").value || 2);
+  if (!endpointId) {
+    setText("configStatus", "Выберите endpoint для browse.");
+    return;
+  }
+  const params = new URLSearchParams({
+    endpoint_id: endpointId,
+    max_depth: String(depth),
+    include_variables: "true",
+    include_objects: "true",
+  });
+  if (nodeId) params.set("node_id", nodeId);
+  const response = await fetchJson(`/api/browse?${params.toString()}`);
+  state.configBrowseItems = Array.isArray(response.items) ? response.items : [];
+  state.configBrowseExpanded = new Set(
+    state.configBrowseItems
+      .filter((item) => item.has_children && Number(item.depth ?? 0) < 2)
+      .map((item) => item.node_id),
+  );
+  setText("configBrowseMeta", `${state.configBrowseItems.length} узлов`);
+  renderConfigBrowseTree();
+}
+
+function renderConfigBrowseTree() {
+  const root = document.getElementById("configBrowseTree");
+  const items = state.configBrowseItems;
+  if (!items.length) {
+    root.innerHTML = `<div class="tree-empty">Нажмите Browse, чтобы загрузить дерево.</div>`;
+    return;
+  }
+
+  const byParent = new Map();
+  for (const item of items) {
+    const key = item.parent_node_id ?? "__root__";
+    const bucket = byParent.get(key) || [];
+    bucket.push(item);
+    byParent.set(key, bucket);
+  }
+
+  const endpointId = document.getElementById("configEndpoint").value || "";
+  const renderBranch = (parentId, level) => {
+    const nodes = byParent.get(parentId) || [];
+    return nodes
+      .map((item) => {
+        const children = byParent.get(item.node_id) || [];
+        const expandable = children.length > 0;
+        const expanded = state.configBrowseExpanded.has(item.node_id);
+        const draggable = item.node_class === "Variable";
+        const label = item.display_name || item.browse_name || item.node_id;
+        const meta = [item.node_class, item.data_type].filter(Boolean);
+        return `
+          <div class="tree-row" style="padding-left: ${8 + level * 18}px">
+            ${
+              expandable
+                ? `<button class="tree-toggle" type="button" data-config-toggle="${escapeHtml(item.node_id)}">${expanded ? "−" : "+"}</button>`
+                : `<span class="tree-spacer"></span>`
+            }
+            <div class="tree-content" ${draggable ? 'draggable="true"' : ""} data-config-node='${escapeHtml(JSON.stringify({ ...item, endpoint_id: endpointId }))}'>
+              <div class="tree-title">
+                <span class="tree-name">${escapeHtml(label)}</span>
+                <span class="tree-class">${escapeHtml(item.node_class || "")}</span>
+              </div>
+              <div class="tree-meta">${meta.map((part) => `<span>${escapeHtml(part)}</span>`).join("")}</div>
+              <div class="tree-node-id">${escapeHtml(item.node_id)}</div>
+            </div>
+          </div>
+          ${expandable && expanded ? renderBranch(item.node_id, level + 1) : ""}
+        `;
+      })
+      .join("");
+  };
+
+  root.innerHTML = `<div class="tree-list">${renderBranch("__root__", 0)}</div>`;
+
+  for (const button of root.querySelectorAll("[data-config-toggle]")) {
+    button.addEventListener("click", (event) => {
+      const nodeId = event.currentTarget.dataset.configToggle;
+      if (state.configBrowseExpanded.has(nodeId)) {
+        state.configBrowseExpanded.delete(nodeId);
+      } else {
+        state.configBrowseExpanded.add(nodeId);
+      }
+      renderConfigBrowseTree();
+    });
+  }
+
+  for (const element of root.querySelectorAll("[data-config-node]")) {
+    element.addEventListener("click", () => {
+      state.selectedBrowseNode = JSON.parse(element.dataset.configNode);
+      setText("configStatus", `Выбрана нода: ${state.selectedBrowseNode.node_id}`);
+    });
+    element.addEventListener("dragstart", (event) => {
+      const payload = element.dataset.configNode;
+      event.dataTransfer.setData("application/json", payload);
+      event.dataTransfer.effectAllowed = "copy";
+    });
+  }
+}
+
+function renderDictionary() {
+  const root = document.getElementById("dictionaryList");
+  const query = state.dictFilter.trim().toLowerCase();
+  const visible = query
+    ? state.dictionary.filter((param) =>
+        [
+          param.name,
+          param.description,
+          param.datatype_name,
+          param.unit_name,
+          param.unit_symbol,
+        ].join(" ").toLowerCase().includes(query),
+      )
+    : state.dictionary;
+
+  setText("dictMeta", `${visible.length} / ${state.dictionary.length} параметров`);
+  if (!visible.length) {
+    root.innerHTML = `<div class="tree-empty">Параметры не найдены.</div>`;
+    return;
+  }
+
+  root.innerHTML = visible
+    .map((param) => {
+      const mapped = state.draftNodes.find((node) => node.dict_param_id === param.id);
+      return `
+        <article class="dict-card" data-dict-id="${escapeHtml(param.id)}">
+          <div class="dict-name">${escapeHtml(param.name)}</div>
+          <div class="dict-description">${escapeHtml(param.description || "-")}</div>
+          <div class="dict-meta">
+            <span>${escapeHtml(param.datatype_name || "-")}</span>
+            <span>${escapeHtml(param.unit_symbol || param.unit_name || "без единиц")}</span>
+            ${mapped ? `<span class="badge badge-ok">mapped</span>` : ""}
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+
+  for (const card of root.querySelectorAll("[data-dict-id]")) {
+    card.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      card.classList.add("drop-target");
+    });
+    card.addEventListener("dragleave", () => card.classList.remove("drop-target"));
+    card.addEventListener("drop", (event) => {
+      event.preventDefault();
+      card.classList.remove("drop-target");
+      const raw = event.dataTransfer.getData("application/json");
+      if (!raw) return;
+      assignNodeToParam(JSON.parse(raw), card.dataset.dictId);
+    });
+    card.addEventListener("click", () => {
+      if (!state.selectedBrowseNode) return;
+      assignNodeToParam(state.selectedBrowseNode, card.dataset.dictId);
+    });
+  }
+}
+
+function assignNodeToParam(browseNode, dictParamId) {
+  const param = state.dictionary.find((item) => item.id === dictParamId);
+  if (!param || !browseNode?.node_id) return;
+  const endpointId = browseNode.endpoint_id || document.getElementById("configEndpoint").value;
+  const existingIndex = state.draftNodes.findIndex(
+    (node) => node.dict_param_id === param.id || (node.endpoint_id === endpointId && node.node_id === browseNode.node_id),
+  );
+  const previous = existingIndex >= 0 ? state.draftNodes[existingIndex] : null;
+  const nodeConfig = {
+    ...(previous || {}),
+    id: previous?.id || makeNodeConfigId(endpointId, param.name),
+    endpoint_id: endpointId,
+    node_id: browseNode.node_id,
+    namespace_uri: previous?.namespace_uri || null,
+    browse_name: browseNode.browse_name || previous?.browse_name || null,
+    display_name: browseNode.display_name || previous?.display_name || null,
+    acquisition_mode: previous?.acquisition_mode || "subscription",
+    read_enabled: previous?.read_enabled ?? true,
+    write_enabled: previous?.write_enabled ?? false,
+    sampling_interval_ms: previous?.sampling_interval_ms || 1000,
+    polling_interval_seconds: previous?.polling_interval_seconds || 5,
+    parameter_code: param.name,
+    parameter_name: param.description || param.name,
+    dict_param_id: param.id,
+    type_by_dict: param.datatype_name || null,
+    unit_by_dict: param.unit_symbol || param.unit_name || null,
+    expected_type: mapDatatypeToExpectedType(param.datatype_name),
+    value_shape: "scalar",
+    unit: param.unit_symbol || param.unit_name || null,
+    value_transform: {
+      scale_factor: previous?.value_transform?.scale_factor ?? 1,
+      offset: previous?.value_transform?.offset ?? 0,
+      target_unit: param.unit_symbol || param.unit_name || null,
+    },
+    input_control: previous?.input_control || {
+      stale_after_seconds: 30,
+      suppress_duplicates: false,
+    },
+    metadata: {
+      ...(previous?.metadata || {}),
+      dict_param_name: param.name,
+      dict_param_description: param.description || null,
+      opcua_browse_name: browseNode.browse_name || null,
+      opcua_display_name: browseNode.display_name || null,
+      opcua_data_type: browseNode.data_type || null,
+    },
+    tags: previous?.tags || [],
+  };
+  if (existingIndex >= 0) {
+    state.draftNodes[existingIndex] = nodeConfig;
+  } else {
+    state.draftNodes.push(nodeConfig);
+  }
+  setText("configStatus", `Привязано: ${browseNode.node_id} -> ${param.name}`);
+  renderDictionary();
+  renderMappings();
+}
+
+function renderMappings() {
+  const root = document.getElementById("mappingList");
+  setText("mappingMeta", `${state.draftNodes.length} нод`);
+  if (!state.draftNodes.length) {
+    root.innerHTML = `<div class="tree-empty">Привязки еще не настроены.</div>`;
+    return;
+  }
+  root.innerHTML = state.draftNodes
+    .map((node) => {
+      const changed = JSON.stringify(node) !== JSON.stringify(state.configNodes.find((item) => item.id === node.id));
+      return `
+        <article class="mapping-card ${changed ? "changed" : ""}">
+          <div>
+            <div class="mapping-name">${escapeHtml(node.parameter_code || node.id)}</div>
+            <div class="mapping-node">${escapeHtml(node.node_id)}</div>
+            <div class="mapping-meta">
+              <span>${escapeHtml(node.endpoint_id)}</span>
+              <span>${escapeHtml(node.acquisition_mode)}</span>
+              <span>${escapeHtml(node.expected_type || "-")}</span>
+              <span>${escapeHtml(node.unit || "без единиц")}</span>
+            </div>
+          </div>
+          <button class="mapping-remove" type="button" data-remove-node="${escapeHtml(node.id)}">Удалить</button>
+        </article>
+      `;
+    })
+    .join("");
+
+  for (const button of root.querySelectorAll("[data-remove-node]")) {
+    button.addEventListener("click", () => {
+      state.draftNodes = state.draftNodes.filter((node) => node.id !== button.dataset.removeNode);
+      renderDictionary();
+      renderMappings();
+    });
+  }
+}
+
+async function saveConfiguration() {
+  const response = await fetchJson("/api/config/nodes", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nodes: state.draftNodes }),
+  });
+  state.configNodes = Array.isArray(response.nodes) ? response.nodes : state.draftNodes;
+  state.draftNodes = structuredClone(state.configNodes);
+  setText("configStatus", pretty(response.results || response));
+  renderMappings();
+  renderDictionary();
+  await fetchSnapshot();
+}
+
+function makeNodeConfigId(endpointId, paramName) {
+  const normalized = `${endpointId}-${paramName}`
+    .toLowerCase()
+    .replace(/[^a-z0-9а-яё]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 96);
+  return normalized || `node-${Date.now()}`;
+}
+
+function mapDatatypeToExpectedType(datatype) {
+  const normalized = String(datatype || "").toLowerCase();
+  if (["integer", "int", "dint", "long"].includes(normalized)) return "int";
+  if (["boolean", "bool"].includes(normalized)) return "bool";
+  if (["string", "text"].includes(normalized)) return "str";
+  if (["char", "byte"].includes(normalized)) return "char";
+  if (["datetime", "date_time"].includes(normalized)) return "datetime";
+  return "float";
+}
+
 document.getElementById("refreshButton").addEventListener("click", fetchSnapshot);
+for (const button of document.querySelectorAll("[data-page-target]")) {
+  button.addEventListener("click", async () => {
+    switchPage(button.dataset.pageTarget);
+    if (button.dataset.pageTarget === "config" && !state.dictionary.length) {
+      await loadConfigurationPage().catch((error) => setText("configStatus", error.message));
+    }
+  });
+}
 document.getElementById("nodeFilter").addEventListener("input", (event) => {
   state.filter = event.target.value;
   if (state.snapshot) renderNodes(state.snapshot.nodes);
+});
+document.getElementById("dictFilter").addEventListener("input", (event) => {
+  state.dictFilter = event.target.value;
+  renderDictionary();
+});
+document.getElementById("loadConfigButton").addEventListener("click", () => {
+  loadConfigurationPage().catch((error) => setText("configStatus", error.message));
+});
+document.getElementById("saveConfigButton").addEventListener("click", () => {
+  saveConfiguration().catch((error) => setText("configStatus", error.message));
+});
+document.getElementById("configBrowseButton").addEventListener("click", () => {
+  browseForConfig().catch((error) => setText("configStatus", error.message));
 });
 
 Promise.all([loadOperations(), fetchSnapshot()]).catch((error) => {
@@ -406,6 +749,7 @@ Promise.all([loadOperations(), fetchSnapshot()]).catch((error) => {
 });
 
 renderBrowseTree();
+renderConfigBrowseTree();
 
 setInterval(() => {
   fetchSnapshot().catch(() => undefined);

@@ -10,6 +10,8 @@
 - `GET /buffer/stats`
 - `POST /read`
 - `POST /browse`
+- `GET /config/nodes`
+- `PUT /config/nodes`
 
 В браузере авторизации нет. Если у клиента включен `management_token`, токен хранится только на стороне dashboard-сервера и передается в OPC UA client API как Bearer token.
 
@@ -43,6 +45,7 @@ http://127.0.0.1:8090
 OPC_CLIENT_BASE_URL=http://host.docker.internal:8080
 OPC_CLIENT_TOKEN=secret-token
 OPC_CLIENT_TIMEOUT_SECONDS=15
+PARAMS_SERVICE_BASE_URL=http://host.docker.internal:8000
 DASHBOARD_PORT=8090
 ```
 
@@ -63,3 +66,4 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8090
 - source timestamp и quality/status;
 - buffer/dead-letter counters;
 - простой browse адресного пространства.
+- страницу конфигурации для привязки OPC UA нод к параметрам справочника и сохранения runtime-конфига клиента.

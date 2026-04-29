@@ -27,6 +27,7 @@ STATIC_DIR = BASE_DIR / "static"
 class ClientSettings:
     base_url: str
     token: str | None
+    params_service_base_url: str
     timeout_seconds: float = 15.0
     rabbitmq_management_url: str | None = None
     rabbitmq_user: str = "guest"
@@ -39,6 +40,7 @@ class ClientSettings:
         return cls(
             base_url=os.getenv("OPC_CLIENT_BASE_URL", "http://127.0.0.1:8080").rstrip("/"),
             token=os.getenv("OPC_CLIENT_TOKEN") or None,
+            params_service_base_url=os.getenv("PARAMS_SERVICE_BASE_URL", "http://127.0.0.1:8000").rstrip("/"),
             timeout_seconds=float(os.getenv("OPC_CLIENT_TIMEOUT_SECONDS", "15")),
             rabbitmq_management_url=(
                 os.getenv("RABBITMQ_MANAGEMENT_URL", "http://host.docker.internal:15672").rstrip("/")
@@ -59,6 +61,9 @@ class OpcClientApi:
 
     async def post(self, path: str, body: dict[str, Any]) -> dict[str, Any] | list[Any] | str:
         return await asyncio.to_thread(self._request, "POST", path, body, False)
+
+    async def put(self, path: str, body: dict[str, Any]) -> dict[str, Any] | list[Any] | str:
+        return await asyncio.to_thread(self._request, "PUT", path, body, False)
 
     def _request(
         self,
@@ -160,6 +165,87 @@ class RabbitMqApi:
         return quote(value, safe="")
 
 
+class ParamsServiceApi:
+    def __init__(self, settings: ClientSettings) -> None:
+        self.settings = settings
+
+    async def dictionary_snapshot(self) -> dict[str, Any]:
+        params, datatypes, units = await asyncio.gather(
+            self._fetch_paged("/api/v1/dict/params"),
+            self._get("/api/v1/dict/datatypes"),
+            self._get("/api/v1/dict/units"),
+        )
+        datatype_by_id = {item["id"]: item for item in datatypes if isinstance(item, dict)}
+        unit_by_id = {item["id"]: item for item in units if isinstance(item, dict)}
+        enriched_params = []
+        for item in params:
+            if not isinstance(item, dict):
+                continue
+            datatype = datatype_by_id.get(item.get("datatype_id"))
+            unit = unit_by_id.get(item.get("unit_id"))
+            enriched_params.append(
+                {
+                    **item,
+                    "datatype": datatype,
+                    "unit": unit,
+                    "datatype_name": datatype.get("name") if datatype else None,
+                    "unit_name": unit.get("name") if unit else None,
+                    "unit_symbol": unit.get("symbol") if unit else None,
+                }
+            )
+        return {
+            "base_url": self.settings.params_service_base_url,
+            "params": enriched_params,
+            "datatypes": datatypes if isinstance(datatypes, list) else [],
+            "units": units if isinstance(units, list) else [],
+        }
+
+    async def _fetch_paged(self, path: str, *, page_size: int = 1000) -> list[Any]:
+        items: list[Any] = []
+        offset = 0
+        while True:
+            separator = "&" if "?" in path else "?"
+            page = await self._get(f"{path}{separator}limit={page_size}&offset={offset}")
+            if not isinstance(page, list):
+                return items
+            items.extend(page)
+            if len(page) < page_size:
+                return items
+            offset += page_size
+
+    async def _get(self, path: str) -> dict[str, Any] | list[Any] | str:
+        return await asyncio.to_thread(self._request, path)
+
+    def _request(self, path: str) -> dict[str, Any] | list[Any] | str:
+        request = Request(
+            f"{self.settings.params_service_base_url}{path}",
+            method="GET",
+            headers={"Accept": "application/json"},
+        )
+        try:
+            with urlopen(request, timeout=self.settings.timeout_seconds) as response:
+                return self._decode_response(response.read(), response.headers.get("content-type", ""))
+        except HTTPError as exc:
+            decoded = self._decode_response(exc.read(), exc.headers.get("content-type", ""))
+            raise HTTPException(status_code=exc.code, detail=decoded) from exc
+        except URLError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Params service API is unavailable: {exc.reason}",
+            ) from exc
+
+    def _decode_response(self, raw: bytes, content_type: str = "") -> dict[str, Any] | list[Any] | str:
+        if not raw:
+            return {}
+        text = raw.decode("utf-8")
+        if "application/json" not in content_type:
+            return text
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
+
+
 class ClientApiRequest(BaseModel):
     operation: str
     endpoint_id: str | None = None
@@ -173,6 +259,7 @@ class ClientApiRequest(BaseModel):
 settings = ClientSettings.from_env()
 client_api = OpcClientApi(settings)
 rabbitmq_api = RabbitMqApi(settings)
+params_api = ParamsServiceApi(settings)
 app = FastAPI(
     title="OPC UA Client Dashboard",
     version="0.1.0",
@@ -208,6 +295,7 @@ async def snapshot() -> dict[str, Any]:
         "updated_at": datetime.now(UTC).isoformat(),
         "client": {
             "base_url": settings.base_url,
+            "params_service_base_url": settings.params_service_base_url,
         },
         "healthy": (
             isinstance(health_payload, dict)
@@ -246,6 +334,25 @@ async def operations() -> list[dict[str, Any]]:
             "needs": ["endpoint_id"],
         },
     ]
+
+
+@app.get("/api/config/nodes")
+async def config_nodes() -> dict[str, Any]:
+    response = await client_api.get("/config/nodes")
+    return {"nodes": response if isinstance(response, list) else []}
+
+
+@app.put("/api/config/nodes")
+async def replace_config_nodes(payload: dict[str, Any]) -> dict[str, Any] | list[Any] | str:
+    nodes = payload.get("nodes")
+    if not isinstance(nodes, list):
+        raise HTTPException(status_code=422, detail="nodes list is required")
+    return await client_api.put("/config/nodes", {"nodes": nodes})
+
+
+@app.get("/api/dictionary")
+async def dictionary() -> dict[str, Any]:
+    return await params_api.dictionary_snapshot()
 
 
 @app.post("/api/client/request")

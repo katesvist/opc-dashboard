@@ -175,6 +175,20 @@ button:hover {
   background: var(--blue);
 }
 
+.nav-button {
+  background: transparent;
+}
+
+.nav-button.active {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: #eef6fb;
+}
+
+.hidden {
+  display: none !important;
+}
+
 .api-button {
   min-width: 120px;
   text-align: left;
@@ -429,6 +443,115 @@ tbody tr:hover {
   font-size: 11px;
 }
 
+.config-toolbar {
+  display: grid;
+  grid-template-columns: 1fr 2fr 90px 2fr auto;
+  gap: 8px;
+  align-items: end;
+  margin-bottom: 10px;
+}
+
+.mapping-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.mapping-column {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.mapping-current {
+  margin-top: 10px;
+}
+
+.column-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding: 8px 10px;
+  background: var(--panel-soft);
+}
+
+.mapping-tree {
+  max-height: 610px;
+  margin-top: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.tree-content[draggable="true"] {
+  cursor: grab;
+}
+
+.tree-content[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.dictionary-list,
+.mapping-list {
+  display: grid;
+  max-height: 610px;
+  overflow: auto;
+}
+
+.dict-card,
+.mapping-card {
+  display: grid;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  padding: 9px 10px;
+}
+
+.dict-card {
+  cursor: copy;
+}
+
+.dict-card:hover,
+.dict-card.drop-target {
+  background: #eef6fb;
+}
+
+.dict-name,
+.mapping-name {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.dict-description,
+.mapping-node {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.dict-meta,
+.mapping-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.mapping-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.mapping-card.changed {
+  border-left: 3px solid var(--blue);
+}
+
+.mapping-remove {
+  padding: 4px 8px;
+}
+
 @media (max-width: 980px) {
   .topbar,
   .inline-title {
@@ -439,7 +562,9 @@ tbody tr:hover {
   .summary,
   .api-grid,
   .form-grid,
-  .two-columns {
+  .two-columns,
+  .config-toolbar,
+  .mapping-layout {
     grid-template-columns: 1fr;
   }
 }
