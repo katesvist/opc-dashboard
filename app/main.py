@@ -296,6 +296,7 @@ async def snapshot() -> dict[str, Any]:
         "client": {
             "base_url": settings.base_url,
             "params_service_base_url": settings.params_service_base_url,
+            "timeout_seconds": settings.timeout_seconds,
         },
         "healthy": (
             isinstance(health_payload, dict)

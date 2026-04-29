@@ -79,7 +79,7 @@ function render() {
   readyBadge.className = `badge ${healthy ? "badge-ok" : "badge-bad"}`;
   readyBadge.textContent = healthy ? "client up" : "client down";
 
-  setText("clientUrl", snapshot.client.base_url);
+  setText("clientUrl", `${snapshot.client.base_url} · timeout ${snapshot.client.timeout_seconds ?? "-"}s`);
   setText("readyHint", `ready: ${snapshot.ready ? "yes" : "no"}`);
   setText("updatedAt", formatDate(snapshot.updated_at));
   setText("endpointCount", snapshot.connections.length);
