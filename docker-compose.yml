@@ -13,7 +13,7 @@ services:
       RABBITMQ_MANAGEMENT_URL: ${RABBITMQ_MANAGEMENT_URL:-http://host.docker.internal:15672}
       RABBITMQ_USER: ${RABBITMQ_USER:-guest}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
-      RABBITMQ_QUEUE: ${RABBITMQ_QUEUE:-opcua.parameter.events}
+      RABBITMQ_QUEUE: ${RABBITMQ_QUEUE:-validator.in.q}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

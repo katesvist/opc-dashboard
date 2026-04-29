@@ -46,6 +46,8 @@ OPC_CLIENT_BASE_URL=http://host.docker.internal:8080
 OPC_CLIENT_TOKEN=secret-token
 OPC_CLIENT_TIMEOUT_SECONDS=300
 PARAMS_SERVICE_BASE_URL=http://host.docker.internal:8000
+RABBITMQ_MANAGEMENT_URL=http://host.docker.internal:15672
+RABBITMQ_QUEUE=validator.in.q
 DASHBOARD_PORT=8090
 ```
 

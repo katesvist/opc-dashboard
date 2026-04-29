@@ -92,8 +92,8 @@ function render() {
   setText(
     "rabbitDetails",
     snapshot.rabbitmq?.available
-      ? `${snapshot.rabbitmq.messages_ready ?? 0} ready / ${snapshot.rabbitmq.messages_unacknowledged ?? 0} unacked`
-      : "RabbitMQ недоступен",
+      ? `${snapshot.rabbitmq.queue ?? "queue"} · ${snapshot.rabbitmq.messages_ready ?? 0} ready / ${snapshot.rabbitmq.messages_unacknowledged ?? 0} unacked`
+      : `${snapshot.rabbitmq?.queue ?? "RabbitMQ"} · ${snapshot.rabbitmq?.error ?? "недоступен"}`,
   );
 
   renderEndpointOptions(snapshot.connections);

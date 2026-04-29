@@ -33,7 +33,7 @@ class ClientSettings:
     rabbitmq_user: str = "guest"
     rabbitmq_password: str = "guest"
     rabbitmq_vhost: str = "/"
-    rabbitmq_queue: str = "opcua.parameter.events"
+    rabbitmq_queue: str = "validator.in.q"
 
     @classmethod
     def from_env(cls) -> ClientSettings:
@@ -48,7 +48,7 @@ class ClientSettings:
             rabbitmq_user=os.getenv("RABBITMQ_USER", "guest"),
             rabbitmq_password=os.getenv("RABBITMQ_PASSWORD", "guest"),
             rabbitmq_vhost=os.getenv("RABBITMQ_VHOST", "/"),
-            rabbitmq_queue=os.getenv("RABBITMQ_QUEUE", "opcua.parameter.events"),
+            rabbitmq_queue=os.getenv("RABBITMQ_QUEUE", "validator.in.q"),
         )
 
 
@@ -151,9 +151,17 @@ class RabbitMqApi:
                     "consumers": payload.get("consumers", 0),
                 }
         except HTTPError as exc:
-            return {"available": False, "error": f"RabbitMQ management returned HTTP {exc.code}."}
+            return {
+                "available": False,
+                "queue": self.settings.rabbitmq_queue,
+                "error": f"RabbitMQ management returned HTTP {exc.code}.",
+            }
         except URLError as exc:
-            return {"available": False, "error": f"RabbitMQ management is unavailable: {exc.reason}"}
+            return {
+                "available": False,
+                "queue": self.settings.rabbitmq_queue,
+                "error": f"RabbitMQ management is unavailable: {exc.reason}",
+            }
 
     def _basic_token(self) -> str:
         raw = f"{self.settings.rabbitmq_user}:{self.settings.rabbitmq_password}".encode("utf-8")
@@ -275,11 +283,11 @@ async def index() -> FileResponse:
 @app.get("/api/snapshot")
 async def snapshot() -> dict[str, Any]:
     health_payload, ready_payload, connections, subscriptions, buffer_stats, rabbitmq_stats = await asyncio.gather(
-        client_api.get("/health", tolerate_error=True),
-        client_api.get("/ready", tolerate_error=True),
-        client_api.get("/connections"),
-        client_api.get("/subscriptions"),
-        client_api.get("/buffer/stats"),
+        _safe_client_get("/health", fallback={}),
+        _safe_client_get("/ready", fallback={}),
+        _safe_client_get("/connections", fallback=[]),
+        _safe_client_get("/subscriptions", fallback=[]),
+        _safe_client_get("/buffer/stats", fallback={}),
         rabbitmq_api.queue_stats(),
     )
 
@@ -311,6 +319,13 @@ async def snapshot() -> dict[str, Any]:
         "buffer": buffer_stats,
         "rabbitmq": rabbitmq_stats,
     }
+
+
+async def _safe_client_get(path: str, fallback: Any) -> Any:
+    try:
+        return await client_api.get(path, tolerate_error=True)
+    except HTTPException as exc:
+        return {"error": exc.detail, "available": False} if isinstance(fallback, dict) else fallback
 
 
 @app.get("/api/operations")
