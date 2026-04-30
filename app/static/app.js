@@ -12,6 +12,7 @@ const state = {
   draftNodes: [],
   selectedBrowseNode: null,
   selectedDictParamId: null,
+  pendingConfigChanges: false,
   activePage: "dashboard",
 };
 
@@ -75,6 +76,21 @@ async function fetchSnapshot() {
   render();
 }
 
+function setBusyState(button, busy) {
+  if (!button) return;
+  button.classList.toggle("is-loading", busy);
+  button.disabled = busy;
+}
+
+async function withBusy(button, work) {
+  setBusyState(button, true);
+  try {
+    return await work();
+  } finally {
+    setBusyState(button, false);
+  }
+}
+
 function render() {
   const snapshot = state.snapshot;
   if (!snapshot) return;
@@ -105,7 +121,7 @@ function render() {
   );
 
   renderEndpointOptions(snapshot.connections);
-  renderConnections(snapshot.connections);
+  renderConnections(snapshot.connections, snapshot.readiness?.endpoints || []);
   renderNodes(snapshot.nodes);
 }
 
@@ -140,7 +156,7 @@ function renderOperations() {
       <small>${operation.method} ${operation.path}</small>
       <small class="api-needs">${required}</small>
     `;
-    button.addEventListener("click", () => runOperation(operation));
+    button.addEventListener("click", (event) => runOperation(operation, event.currentTarget));
     if (operation.group === "technical") {
       technical.append(button);
     } else {
@@ -149,7 +165,7 @@ function renderOperations() {
   }
 }
 
-async function runOperation(operation) {
+async function runOperation(operation, button) {
   const result = document.getElementById("apiResult");
   clearFieldErrors();
   const { payload, missing } = buildOperationPayload(operation);
@@ -168,23 +184,28 @@ async function runOperation(operation) {
     return;
   }
 
+  result.classList.add("loading");
   result.textContent = pretty({
     status: `running ${operation.id}...`,
     request_preview: payload,
   });
 
   try {
-    const response = await fetchJson("/api/client/request", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const response = await withBusy(button, () =>
+      fetchJson("/api/client/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+    );
+    result.classList.remove("loading");
     result.textContent = pretty(response);
     if (operation.id === "browse" && response.ok && Array.isArray(response.response)) {
       applyBrowseResult(payload, response.response);
     }
     await fetchSnapshot();
   } catch (error) {
+    result.classList.remove("loading");
     result.textContent = error.message;
   }
 }
@@ -259,7 +280,17 @@ function parseApiValue(raw) {
   }
 }
 
-function renderConnections(connections) {
+function getConnectionError(item, readinessEndpoints) {
+  if (item.last_error) return item.last_error;
+  const readinessMatch = readinessEndpoints.find((entry) => entry.endpoint_id === item.endpoint_id);
+  if (readinessMatch?.last_error) return readinessMatch.last_error;
+  if (item.state === "failed") return "Подключение завершилось ошибкой, но OPC UA client не передал текст причины.";
+  if (item.state === "reconnecting") return "Идет переподключение к OPC UA серверу.";
+  if (item.state === "disconnected") return "Соединение разорвано.";
+  return "-";
+}
+
+function renderConnections(connections, readinessEndpoints = []) {
   const table = document.getElementById("connectionsTable");
   table.innerHTML = "";
   if (!connections.length) {
@@ -274,7 +305,7 @@ function renderConnections(connections) {
       <td><span class="badge ${statusBadge(item.state, item.connected)}">${item.state}</span></td>
       <td>${formatDate(item.last_data_at)}</td>
       <td>${item.reconnect_attempts}</td>
-      <td class="node-id">${item.last_error || "-"}</td>
+      <td class="node-id">${escapeHtml(getConnectionError(item, readinessEndpoints))}</td>
     `;
     table.append(row);
   }
@@ -366,6 +397,45 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function hasPersistedMappingForParam(paramId) {
+  return state.configNodes.some((node) => node.dict_param_id === paramId);
+}
+
+function hasPersistedMappingForBrowseNode(endpointId, nodeId) {
+  return state.configNodes.some((node) => node.endpoint_id === endpointId && node.node_id === nodeId);
+}
+
+function isSameBrowseNode(left, right) {
+  if (!left || !right) return false;
+  return left.endpoint_id === right.endpoint_id && left.node_id === right.node_id;
+}
+
+function updatePendingConfigChanges() {
+  state.pendingConfigChanges = JSON.stringify(state.draftNodes) !== JSON.stringify(state.configNodes);
+}
+
+function clearConfigSelection() {
+  state.selectedBrowseNode = null;
+  state.selectedDictParamId = null;
+}
+
+function buildDraftStatusMessage() {
+  return `Привязка добавлена в черновик. Нажмите «Сохранить в клиент», чтобы применить изменения. Всего нод в черновике: ${state.draftNodes.length}.`;
+}
+
+function buildConfigSavedMessage(savedNodes) {
+  return `Сохранение прошло успешно. В клиенте настроено ${savedNodes} нод.`;
+}
+
+function buildSelectionStatusMessage() {
+  const node = state.selectedBrowseNode;
+  const param = state.dictionary.find((item) => item.id === state.selectedDictParamId);
+  if (node && param) return `Пара выбрана: ${node.node_id} -> ${param.name}. Нажмите «Привязать», чтобы добавить в черновик.`;
+  if (node) return `Выбрана нода ${node.node_id}. Теперь выберите параметр справа.`;
+  if (param) return `Выбран параметр ${param.name}. Теперь выберите ноду слева.`;
+  return "Выберите ноду и параметр для новой привязки.";
+}
+
 function renderNodes(nodes) {
   const table = document.getElementById("nodesTable");
   const query = state.filter.trim().toLowerCase();
@@ -434,6 +504,7 @@ async function loadConfigurationPage() {
   if (configResult.status === "fulfilled") {
     state.configNodes = Array.isArray(configResult.value.nodes) ? configResult.value.nodes : [];
     state.draftNodes = clone(state.configNodes);
+    updatePendingConfigChanges();
     messages.push(`Конфигурация клиента: ${state.draftNodes.length} нод`);
   } else {
     messages.push(`Конфигурация клиента не загружена: ${configResult.reason.message}`);
@@ -448,9 +519,11 @@ async function loadConfigurationPage() {
   }
 
   messages.push(`OPC UA клиент: ${state.snapshot?.client?.base_url || "-"}`);
+  clearConfigSelection();
   setConfigStatus(messages.join("\n"), configResult.status === "fulfilled" || dictionaryResult.status === "fulfilled" ? "success" : "error");
   renderDictionary();
   renderMappings();
+  renderConfigBrowseTree();
   renderSelectionBridge();
 }
 
@@ -509,6 +582,7 @@ function renderConfigBrowseTree() {
         const expanded = state.configBrowseExpanded.has(item.node_id);
         const draggable = item.node_class === "Variable";
         const selected = state.selectedBrowseNode?.endpoint_id === endpointId && state.selectedBrowseNode?.node_id === item.node_id;
+        const mapped = hasPersistedMappingForBrowseNode(endpointId, item.node_id);
         const label = item.display_name || item.browse_name || item.node_id;
         const meta = [item.node_class, item.data_type].filter(Boolean);
         return `
@@ -522,6 +596,7 @@ function renderConfigBrowseTree() {
               <div class="tree-title">
                 <span class="tree-name">${escapeHtml(label)}</span>
                 <span class="tree-class">${escapeHtml(item.node_class || "")}</span>
+                ${mapped ? `<span class="inline-badge">mapped</span>` : ""}
               </div>
               <div class="tree-meta">${meta.map((part) => `<span>${escapeHtml(part)}</span>`).join("")}</div>
               <div class="tree-node-id">${escapeHtml(item.node_id)}</div>
@@ -549,10 +624,11 @@ function renderConfigBrowseTree() {
 
   for (const element of root.querySelectorAll("[data-config-node]")) {
     element.addEventListener("click", () => {
-      state.selectedBrowseNode = JSON.parse(element.dataset.configNode);
+      const clickedNode = JSON.parse(element.dataset.configNode);
+      state.selectedBrowseNode = isSameBrowseNode(state.selectedBrowseNode, clickedNode) ? null : clickedNode;
       renderConfigBrowseTree();
       renderSelectionBridge();
-      setConfigStatus(`Выбрана нода ${state.selectedBrowseNode.node_id}. Теперь выберите параметр справа.`, "info");
+      setConfigStatus(buildSelectionStatusMessage(), "info");
     });
     element.addEventListener("dragstart", (event) => {
       const payload = element.dataset.configNode;
@@ -592,7 +668,7 @@ function renderDictionary() {
 
   root.innerHTML = visible
     .map((param) => {
-      const mapped = state.draftNodes.find((node) => node.dict_param_id === param.id);
+      const mapped = hasPersistedMappingForParam(param.id);
       const selected = state.selectedDictParamId === param.id;
       return `
         <article class="dict-card ${selected ? "selected" : ""}" data-dict-id="${escapeHtml(param.id)}">
@@ -626,15 +702,10 @@ function renderDictionary() {
       assignNodeToParam(JSON.parse(raw), card.dataset.dictId);
     });
     card.addEventListener("click", () => {
-      state.selectedDictParamId = card.dataset.dictId;
+      state.selectedDictParamId = state.selectedDictParamId === card.dataset.dictId ? null : card.dataset.dictId;
       renderDictionary();
       renderSelectionBridge();
-      if (state.selectedBrowseNode) {
-        assignSelectedPair();
-        return;
-      }
-      const param = state.dictionary.find((item) => item.id === card.dataset.dictId);
-      setConfigStatus(`Выбран параметр ${param?.name || "-"}. Теперь выберите ноду слева.`, "info");
+      setConfigStatus(buildSelectionStatusMessage(), "info");
     });
   }
 }
@@ -724,9 +795,10 @@ function assignNodeToParam(browseNode, dictParamId) {
   } else {
     state.draftNodes.push(nodeConfig);
   }
+  updatePendingConfigChanges();
   state.selectedBrowseNode = { ...browseNode, endpoint_id: endpointId };
   state.selectedDictParamId = param.id;
-  setConfigStatus(`Привязано: ${browseNode.node_id} -> ${param.name}`, "success");
+  setConfigStatus(buildDraftStatusMessage(), "warn");
   renderSelectionBridge();
   renderConfigBrowseTree();
   renderDictionary();
@@ -764,6 +836,7 @@ function renderMappings() {
   for (const button of root.querySelectorAll("[data-remove-node]")) {
     button.addEventListener("click", () => {
       state.draftNodes = state.draftNodes.filter((node) => node.id !== button.dataset.removeNode);
+      updatePendingConfigChanges();
       setConfigStatus("Привязка удалена из черновика. Не забудьте сохранить изменения в клиент.", "warn");
       renderDictionary();
       renderMappings();
@@ -779,9 +852,13 @@ async function saveConfiguration() {
   });
   state.configNodes = Array.isArray(response.nodes) ? response.nodes : state.draftNodes;
   state.draftNodes = clone(state.configNodes);
-  setConfigStatus(pretty(response.results || response), "success");
+  updatePendingConfigChanges();
+  clearConfigSelection();
+  setConfigStatus(buildConfigSavedMessage(state.configNodes.length), "success");
   renderMappings();
   renderDictionary();
+  renderConfigBrowseTree();
+  renderSelectionBridge();
   await fetchSnapshot();
 }
 
@@ -804,12 +881,14 @@ function mapDatatypeToExpectedType(datatype) {
   return "float";
 }
 
-document.getElementById("refreshButton").addEventListener("click", fetchSnapshot);
+document.getElementById("refreshButton").addEventListener("click", (event) => {
+  withBusy(event.currentTarget, fetchSnapshot).catch(() => undefined);
+});
 for (const button of document.querySelectorAll("[data-page-target]")) {
   button.addEventListener("click", async () => {
     switchPage(button.dataset.pageTarget);
     if (button.dataset.pageTarget === "config" && !state.dictionary.length) {
-      await loadConfigurationPage().catch((error) => setText("configStatus", error.message));
+      await loadConfigurationPage().catch((error) => setConfigStatus(error.message, "error"));
     }
   });
 }
@@ -822,13 +901,16 @@ document.getElementById("dictFilter").addEventListener("input", (event) => {
   renderDictionary();
 });
 document.getElementById("loadConfigButton").addEventListener("click", () => {
-  loadConfigurationPage().catch((error) => setConfigStatus(error.message, "error"));
+  const button = document.getElementById("loadConfigButton");
+  withBusy(button, loadConfigurationPage).catch((error) => setConfigStatus(error.message, "error"));
 });
 document.getElementById("saveConfigButton").addEventListener("click", () => {
-  saveConfiguration().catch((error) => setConfigStatus(error.message, "error"));
+  const button = document.getElementById("saveConfigButton");
+  withBusy(button, saveConfiguration).catch((error) => setConfigStatus(error.message, "error"));
 });
 document.getElementById("configBrowseButton").addEventListener("click", () => {
-  browseForConfig().catch((error) => setConfigStatus(error.message, "error"));
+  const button = document.getElementById("configBrowseButton");
+  withBusy(button, browseForConfig).catch((error) => setConfigStatus(error.message, "error"));
 });
 document.getElementById("bindSelectionButton").addEventListener("click", () => {
   assignSelectedPair();
