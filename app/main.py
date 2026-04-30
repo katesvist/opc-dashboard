@@ -59,6 +59,9 @@ class OpcClientApi:
     async def get(self, path: str, *, tolerate_error: bool = False) -> dict[str, Any] | list[Any] | str:
         return await asyncio.to_thread(self._request, "GET", path, None, tolerate_error)
 
+    async def get_result(self, path: str) -> tuple[int, dict[str, Any] | list[Any] | str]:
+        return await asyncio.to_thread(self._request_result, "GET", path, None)
+
     async def post(self, path: str, body: dict[str, Any]) -> dict[str, Any] | list[Any] | str:
         return await asyncio.to_thread(self._request, "POST", path, body, False)
 
@@ -87,6 +90,36 @@ class OpcClientApi:
             if tolerate_error:
                 return decoded
             raise HTTPException(status_code=exc.code, detail=decoded) from exc
+        except URLError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"OPC UA client API is unavailable: {exc.reason}",
+            ) from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise HTTPException(
+                status_code=504,
+                detail=f"OPC UA client API timed out after {self.settings.timeout_seconds:g}s.",
+            ) from exc
+
+    def _request_result(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None,
+    ) -> tuple[int, dict[str, Any] | list[Any] | str]:
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+        request = Request(
+            f"{self.settings.base_url}{path}",
+            data=payload,
+            method=method,
+            headers=self._headers(has_body=body is not None),
+        )
+        try:
+            with urlopen(request, timeout=self.settings.timeout_seconds) as response:
+                return response.status, self._decode_response(response.read(), response.headers.get("content-type", ""))
+        except HTTPError as exc:
+            decoded = self._decode_response(exc.read(), exc.headers.get("content-type", ""))
+            return exc.code, decoded
         except URLError as exc:
             raise HTTPException(
                 status_code=502,
@@ -354,8 +387,11 @@ async def operations() -> list[dict[str, Any]]:
 
 @app.get("/api/config/nodes")
 async def config_nodes() -> dict[str, Any]:
-    response = await client_api.get("/config/nodes")
-    return {"nodes": response if isinstance(response, list) else []}
+    try:
+        response = await client_api.get("/config/nodes")
+        return {"nodes": response if isinstance(response, list) else []}
+    except HTTPException as exc:
+        raise HTTPException(status_code=exc.status_code, detail=_unwrap_detail(exc.detail)) from exc
 
 
 @app.put("/api/config/nodes")
@@ -363,7 +399,10 @@ async def replace_config_nodes(payload: dict[str, Any]) -> dict[str, Any] | list
     nodes = payload.get("nodes")
     if not isinstance(nodes, list):
         raise HTTPException(status_code=422, detail="nodes list is required")
-    return await client_api.put("/config/nodes", {"nodes": nodes})
+    try:
+        return await client_api.put("/config/nodes", {"nodes": nodes})
+    except HTTPException as exc:
+        raise HTTPException(status_code=exc.status_code, detail=_unwrap_detail(exc.detail)) from exc
 
 
 @app.get("/api/dictionary")
@@ -412,7 +451,10 @@ async def browse(
     }
     if node_id:
         body["node_id"] = node_id
-    response = await client_api.post("/browse", body)
+    try:
+        response = await client_api.post("/browse", body)
+    except HTTPException as exc:
+        raise HTTPException(status_code=exc.status_code, detail=_unwrap_detail(exc.detail)) from exc
     return {
         "endpoint_id": endpoint_id,
         "node_id": node_id,
@@ -426,7 +468,10 @@ async def _execute_client_operation(payload: ClientApiRequest) -> dict[str, Any]
     if operation == "health":
         return await client_api.get("/health")
     if operation == "ready":
-        return await client_api.get("/ready", tolerate_error=True)
+        status_code, response = await client_api.get_result("/ready")
+        if status_code >= 400:
+            raise HTTPException(status_code=status_code, detail=_unwrap_detail(response))
+        return response
     if operation == "metrics":
         return await client_api.get("/metrics")
     if operation == "connections":
@@ -477,6 +522,12 @@ def _require_field(value: str | None, field_name: str) -> str:
     if not value:
         raise HTTPException(status_code=422, detail=f"{field_name} is required")
     return value
+
+
+def _unwrap_detail(detail: Any) -> Any:
+    if isinstance(detail, dict) and set(detail) == {"detail"}:
+        return detail["detail"]
+    return detail
 
 
 async def _build_nodes_snapshot(subscriptions: list[Any]) -> list[dict[str, Any]]:

@@ -11,6 +11,7 @@ const state = {
   configNodes: [],
   draftNodes: [],
   selectedBrowseNode: null,
+  selectedDictParamId: null,
   activePage: "dashboard",
 };
 
@@ -48,6 +49,13 @@ const clone = (value) => {
   if (typeof structuredClone === "function") return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
 };
+
+function setConfigStatus(message, tone = "info") {
+  const element = document.getElementById("configStatus");
+  if (!element) return;
+  element.textContent = message;
+  element.className = `config-status tone-${tone}`;
+}
 
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, { cache: "no-store", ...options });
@@ -416,7 +424,7 @@ function switchPage(page) {
 }
 
 async function loadConfigurationPage() {
-  setText("configStatus", "Загружаю текущую конфигурацию клиента и справочник параметров...");
+  setConfigStatus("Загружаю текущую конфигурацию клиента и справочник параметров...", "info");
   const [configResult, dictionaryResult] = await Promise.allSettled([
     fetchJson("/api/config/nodes"),
     fetchJson("/api/dictionary"),
@@ -440,9 +448,10 @@ async function loadConfigurationPage() {
   }
 
   messages.push(`OPC UA клиент: ${state.snapshot?.client?.base_url || "-"}`);
-  setText("configStatus", messages.join("\n"));
+  setConfigStatus(messages.join("\n"), configResult.status === "fulfilled" || dictionaryResult.status === "fulfilled" ? "success" : "error");
   renderDictionary();
   renderMappings();
+  renderSelectionBridge();
 }
 
 async function browseForConfig() {
@@ -450,9 +459,10 @@ async function browseForConfig() {
   const nodeId = document.getElementById("configNodeId").value.trim();
   const depth = Number(document.getElementById("configDepth").value || 2);
   if (!endpointId) {
-    setText("configStatus", "Выберите endpoint для browse.");
+    setConfigStatus("Выберите endpoint для browse.", "warn");
     return;
   }
+  setConfigStatus("Загружаю дерево OPC UA...", "info");
   const params = new URLSearchParams({
     endpoint_id: endpointId,
     max_depth: String(depth),
@@ -467,7 +477,9 @@ async function browseForConfig() {
       .filter((item) => item.has_children && Number(item.depth ?? 0) < 2)
       .map((item) => item.node_id),
   );
-  setText("configBrowseMeta", `${state.configBrowseItems.length} узлов`);
+  const variableCount = state.configBrowseItems.filter((item) => item.node_class === "Variable").length;
+  setText("configBrowseMeta", `${state.configBrowseItems.length} узлов · ${variableCount} variable`);
+  setConfigStatus(`Дерево загружено: ${state.configBrowseItems.length} узлов, из них ${variableCount} variable.`, "success");
   renderConfigBrowseTree();
 }
 
@@ -496,6 +508,7 @@ function renderConfigBrowseTree() {
         const expandable = children.length > 0;
         const expanded = state.configBrowseExpanded.has(item.node_id);
         const draggable = item.node_class === "Variable";
+        const selected = state.selectedBrowseNode?.endpoint_id === endpointId && state.selectedBrowseNode?.node_id === item.node_id;
         const label = item.display_name || item.browse_name || item.node_id;
         const meta = [item.node_class, item.data_type].filter(Boolean);
         return `
@@ -505,7 +518,7 @@ function renderConfigBrowseTree() {
                 ? `<button class="tree-toggle" type="button" data-config-toggle="${escapeHtml(item.node_id)}">${expanded ? "−" : "+"}</button>`
                 : `<span class="tree-spacer"></span>`
             }
-            <div class="tree-content" ${draggable ? 'draggable="true"' : ""} data-config-node='${escapeHtml(JSON.stringify({ ...item, endpoint_id: endpointId }))}'>
+            <div class="tree-content config-tree-content ${draggable ? "tree-content-draggable" : "tree-content-static"} ${selected ? "selected" : ""}" ${draggable ? 'draggable="true"' : ""} data-config-node='${escapeHtml(JSON.stringify({ ...item, endpoint_id: endpointId }))}'>
               <div class="tree-title">
                 <span class="tree-name">${escapeHtml(label)}</span>
                 <span class="tree-class">${escapeHtml(item.node_class || "")}</span>
@@ -537,12 +550,21 @@ function renderConfigBrowseTree() {
   for (const element of root.querySelectorAll("[data-config-node]")) {
     element.addEventListener("click", () => {
       state.selectedBrowseNode = JSON.parse(element.dataset.configNode);
-      setText("configStatus", `Выбрана нода: ${state.selectedBrowseNode.node_id}`);
+      renderConfigBrowseTree();
+      renderSelectionBridge();
+      setConfigStatus(`Выбрана нода ${state.selectedBrowseNode.node_id}. Теперь выберите параметр справа.`, "info");
     });
     element.addEventListener("dragstart", (event) => {
       const payload = element.dataset.configNode;
       event.dataTransfer.setData("application/json", payload);
       event.dataTransfer.effectAllowed = "copy";
+      state.selectedBrowseNode = JSON.parse(payload);
+      renderConfigBrowseTree();
+      renderSelectionBridge();
+      root.classList.add("is-dragging");
+    });
+    element.addEventListener("dragend", () => {
+      root.classList.remove("is-dragging");
     });
   }
 }
@@ -571,8 +593,9 @@ function renderDictionary() {
   root.innerHTML = visible
     .map((param) => {
       const mapped = state.draftNodes.find((node) => node.dict_param_id === param.id);
+      const selected = state.selectedDictParamId === param.id;
       return `
-        <article class="dict-card" data-dict-id="${escapeHtml(param.id)}">
+        <article class="dict-card ${selected ? "selected" : ""}" data-dict-id="${escapeHtml(param.id)}">
           <div class="dict-name">${escapeHtml(param.name)}</div>
           <div class="dict-description">${escapeHtml(param.description || "-")}</div>
           <div class="dict-meta">
@@ -590,6 +613,10 @@ function renderDictionary() {
       event.preventDefault();
       card.classList.add("drop-target");
     });
+    card.addEventListener("dragenter", (event) => {
+      event.preventDefault();
+      card.classList.add("drop-target");
+    });
     card.addEventListener("dragleave", () => card.classList.remove("drop-target"));
     card.addEventListener("drop", (event) => {
       event.preventDefault();
@@ -599,10 +626,49 @@ function renderDictionary() {
       assignNodeToParam(JSON.parse(raw), card.dataset.dictId);
     });
     card.addEventListener("click", () => {
-      if (!state.selectedBrowseNode) return;
-      assignNodeToParam(state.selectedBrowseNode, card.dataset.dictId);
+      state.selectedDictParamId = card.dataset.dictId;
+      renderDictionary();
+      renderSelectionBridge();
+      if (state.selectedBrowseNode) {
+        assignSelectedPair();
+        return;
+      }
+      const param = state.dictionary.find((item) => item.id === card.dataset.dictId);
+      setConfigStatus(`Выбран параметр ${param?.name || "-"}. Теперь выберите ноду слева.`, "info");
     });
   }
+}
+
+function renderSelectionBridge() {
+  const selectedNodeCard = document.getElementById("selectedNodeCard");
+  const selectedParamCard = document.getElementById("selectedParamCard");
+  const bindButton = document.getElementById("bindSelectionButton");
+
+  const node = state.selectedBrowseNode;
+  const param = state.dictionary.find((item) => item.id === state.selectedDictParamId) || null;
+
+  selectedNodeCard.classList.toggle("filled", Boolean(node));
+  selectedParamCard.classList.toggle("filled", Boolean(param));
+
+  setText("selectedNodeTitle", node?.display_name || node?.browse_name || node?.node_id || "Не выбрана");
+  setText(
+    "selectedNodeMeta",
+    node ? `${node.endpoint_id || "-"} · ${node.node_class || "-"} · ${node.node_id}` : "Выберите variable-ноду в дереве слева.",
+  );
+  setText("selectedParamTitle", param?.name || "Не выбран");
+  setText(
+    "selectedParamMeta",
+    param
+      ? `${param.description || "-"} · ${param.datatype_name || "-"} · ${param.unit_symbol || param.unit_name || "без единиц"}`
+      : "Выберите параметр в справочнике справа.",
+  );
+
+  bindButton.disabled = !(node && param);
+}
+
+function assignSelectedPair() {
+  if (!state.selectedBrowseNode || !state.selectedDictParamId) return;
+  assignNodeToParam(state.selectedBrowseNode, state.selectedDictParamId);
 }
 
 function assignNodeToParam(browseNode, dictParamId) {
@@ -658,7 +724,11 @@ function assignNodeToParam(browseNode, dictParamId) {
   } else {
     state.draftNodes.push(nodeConfig);
   }
-  setText("configStatus", `Привязано: ${browseNode.node_id} -> ${param.name}`);
+  state.selectedBrowseNode = { ...browseNode, endpoint_id: endpointId };
+  state.selectedDictParamId = param.id;
+  setConfigStatus(`Привязано: ${browseNode.node_id} -> ${param.name}`, "success");
+  renderSelectionBridge();
+  renderConfigBrowseTree();
   renderDictionary();
   renderMappings();
 }
@@ -694,6 +764,7 @@ function renderMappings() {
   for (const button of root.querySelectorAll("[data-remove-node]")) {
     button.addEventListener("click", () => {
       state.draftNodes = state.draftNodes.filter((node) => node.id !== button.dataset.removeNode);
+      setConfigStatus("Привязка удалена из черновика. Не забудьте сохранить изменения в клиент.", "warn");
       renderDictionary();
       renderMappings();
     });
@@ -708,7 +779,7 @@ async function saveConfiguration() {
   });
   state.configNodes = Array.isArray(response.nodes) ? response.nodes : state.draftNodes;
   state.draftNodes = clone(state.configNodes);
-  setText("configStatus", pretty(response.results || response));
+  setConfigStatus(pretty(response.results || response), "success");
   renderMappings();
   renderDictionary();
   await fetchSnapshot();
@@ -751,13 +822,16 @@ document.getElementById("dictFilter").addEventListener("input", (event) => {
   renderDictionary();
 });
 document.getElementById("loadConfigButton").addEventListener("click", () => {
-  loadConfigurationPage().catch((error) => setText("configStatus", error.message));
+  loadConfigurationPage().catch((error) => setConfigStatus(error.message, "error"));
 });
 document.getElementById("saveConfigButton").addEventListener("click", () => {
-  saveConfiguration().catch((error) => setText("configStatus", error.message));
+  saveConfiguration().catch((error) => setConfigStatus(error.message, "error"));
 });
 document.getElementById("configBrowseButton").addEventListener("click", () => {
-  browseForConfig().catch((error) => setText("configStatus", error.message));
+  browseForConfig().catch((error) => setConfigStatus(error.message, "error"));
+});
+document.getElementById("bindSelectionButton").addEventListener("click", () => {
+  assignSelectedPair();
 });
 
 switchPage(state.activePage);
@@ -771,6 +845,7 @@ Promise.all([loadOperations(), fetchSnapshot()]).catch((error) => {
 
 renderBrowseTree();
 renderConfigBrowseTree();
+renderSelectionBridge();
 
 setInterval(() => {
   fetchSnapshot().catch(() => undefined);

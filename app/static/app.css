@@ -506,13 +506,103 @@ tbody tr:hover {
   margin-bottom: 12px;
 }
 
+.config-workbench {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
 .config-status {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 9px 10px;
-  color: var(--muted);
-  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: var(--text);
+  background: linear-gradient(180deg, #ffffff, #f8faf8);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  font-weight: 700;
   white-space: pre-wrap;
+}
+
+.config-status.tone-info {
+  border-color: #bfd7e7;
+  background: linear-gradient(180deg, #f8fbfd, #eef6fb);
+}
+
+.config-status.tone-success {
+  border-color: #b8d8c7;
+  background: linear-gradient(180deg, #f7fcf9, #edf8f2);
+}
+
+.config-status.tone-warn {
+  border-color: #e6d2a6;
+  background: linear-gradient(180deg, #fffaf1, #fff1d6);
+}
+
+.config-status.tone-error {
+  border-color: #e5c0bc;
+  background: linear-gradient(180deg, #fff9f8, #fdeeee);
+}
+
+.selection-bridge {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 160px minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.selection-card {
+  display: grid;
+  gap: 6px;
+  min-height: 110px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  padding: 14px;
+  background: #fff;
+}
+
+.selection-card.filled {
+  border-style: solid;
+  border-color: #bdd2df;
+  background: linear-gradient(180deg, #ffffff, #f5f9fc);
+  box-shadow: 0 0 0 1px rgba(31, 95, 139, 0.06);
+}
+
+.selection-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.selection-card strong {
+  font-size: 15px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.selection-meta {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.selection-action {
+  display: grid;
+  place-items: center;
+}
+
+.selection-action .btn {
+  width: 100%;
+  min-height: 48px;
+  border-radius: 10px;
+  font-size: 14px;
+}
+
+.selection-action .btn:disabled {
+  border-color: var(--line);
+  color: var(--muted);
+  background: var(--panel-soft);
+  cursor: not-allowed;
 }
 
 .config-toolbar {
@@ -562,18 +652,48 @@ tbody tr:hover {
   border-radius: 0;
 }
 
+.mapping-tree.is-dragging {
+  box-shadow: inset 0 0 0 2px rgba(31, 95, 139, 0.14);
+}
+
 .dictionary-tools {
   border-bottom: 1px solid var(--line);
   padding: 8px 10px;
   background: #fff;
 }
 
-.tree-content[draggable="true"] {
-  cursor: grab;
+.config-tree-content {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease;
 }
 
-.tree-content[draggable="true"]:active {
+.tree-content-draggable {
+  cursor: grab;
+  background: #fbfcfb;
+}
+
+.tree-content-draggable:active {
   cursor: grabbing;
+}
+
+.tree-content-draggable:hover {
+  border-color: #cfe0ea;
+  background: #f6fbfe;
+}
+
+.tree-content-static {
+  opacity: 0.9;
+}
+
+.config-tree-content.selected {
+  border-color: var(--blue);
+  background: #eef6fb;
+  box-shadow: 0 0 0 2px rgba(31, 95, 139, 0.12);
 }
 
 .dictionary-list,
@@ -593,11 +713,18 @@ tbody tr:hover {
 
 .dict-card {
   cursor: copy;
+  border-left: 3px solid transparent;
 }
 
 .dict-card:hover,
 .dict-card.drop-target {
   background: #eef6fb;
+}
+
+.dict-card.selected {
+  border-left-color: var(--blue);
+  background: #eef6fb;
+  box-shadow: inset 0 0 0 1px rgba(31, 95, 139, 0.14);
 }
 
 .dict-name,
@@ -646,6 +773,7 @@ tbody tr:hover {
   .form-grid,
   .two-columns,
   .config-steps,
+  .selection-bridge,
   .config-toolbar,
   .mapping-layout {
     grid-template-columns: 1fr;

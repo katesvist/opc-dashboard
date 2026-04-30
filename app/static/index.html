@@ -176,9 +176,24 @@
           </article>
         </div>
 
-        <div class="config-status-row">
-          <div id="configStatus" class="config-status">Данные еще не загружены.</div>
-        </div>
+        <section class="config-workbench">
+          <div id="configStatus" class="config-status tone-info">Данные еще не загружены.</div>
+          <div class="selection-bridge">
+            <article id="selectedNodeCard" class="selection-card">
+              <span class="selection-label">Выбранная нода</span>
+              <strong id="selectedNodeTitle">Не выбрана</strong>
+              <div id="selectedNodeMeta" class="selection-meta">Выберите variable-ноду в дереве слева.</div>
+            </article>
+            <div class="selection-action">
+              <button id="bindSelectionButton" class="btn primary" type="button" disabled>Привязать</button>
+            </div>
+            <article id="selectedParamCard" class="selection-card">
+              <span class="selection-label">Выбранный параметр</span>
+              <strong id="selectedParamTitle">Не выбран</strong>
+              <div id="selectedParamMeta" class="selection-meta">Выберите параметр в справочнике справа.</div>
+            </article>
+          </div>
+        </section>
 
         <div class="config-toolbar">
           <label>
@@ -201,7 +216,7 @@
             <div class="column-title">
               <div>
                 <h3>OPC UA дерево</h3>
-                <p>Доступные variable-ноды можно перетаскивать.</p>
+                <p>Выбирайте узел кликом или перетаскивайте variable-ноду на параметр.</p>
               </div>
               <span id="configBrowseMeta" class="muted">Нет browse-данных</span>
             </div>
@@ -212,7 +227,7 @@
             <div class="column-title">
               <div>
                 <h3>Справочник параметров</h3>
-                <p>Подтягивается из сервиса параметров автоматически и по кнопке «Обновить данные».</p>
+                <p>Параметр можно выбрать кликом или использовать как цель для перетаскивания ноды.</p>
               </div>
               <span id="dictMeta" class="muted">0 параметров</span>
             </div>
