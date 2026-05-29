@@ -3,8 +3,7 @@ const state = {
   operations: [],
   filter: "",
   dictFilter: "",
-  browseItems: [],
-  browseExpanded: new Set(),
+  configTreeFilter: "",
   configBrowseItems: [],
   configBrowseExpanded: new Set(),
   dictionary: [],
@@ -12,6 +11,9 @@ const state = {
   draftNodes: [],
   selectedBrowseNode: null,
   selectedDictParamId: null,
+  pendingAssignNodeId: null,
+  pendingAssignGroupId: null,
+  workspaceCollapsed: new Set(),
   pendingConfigChanges: false,
   activePage: "dashboard",
 };
@@ -200,9 +202,6 @@ async function runOperation(operation, button) {
     );
     result.classList.remove("loading");
     result.textContent = pretty(response);
-    if (operation.id === "browse" && response.ok && Array.isArray(response.response)) {
-      applyBrowseResult(payload, response.response);
-    }
     await fetchSnapshot();
   } catch (error) {
     result.classList.remove("loading");
@@ -210,20 +209,6 @@ async function runOperation(operation, button) {
   }
 }
 
-function applyBrowseResult(payload, items) {
-  state.browseItems = items;
-  state.browseExpanded = new Set(
-    items
-      .filter((item) => item.has_children && Number(item.depth ?? 0) < 2)
-      .map((item) => item.node_id),
-  );
-  const nodeInfo = payload.node_id ? `, стартовый узел: ${payload.node_id}` : "";
-  setText(
-    "browseTreeMeta",
-    `Endpoint: ${payload.endpoint_id}${nodeInfo}, depth: ${payload.max_depth}, узлов: ${items.length}`,
-  );
-  renderBrowseTree();
-}
 
 function buildOperationPayload(operation) {
   const endpointId = document.getElementById("apiEndpoint").value || null;
@@ -234,7 +219,7 @@ function buildOperationPayload(operation) {
     endpoint_id: endpointId,
     node_id: nodeId,
     value: rawValue ? parseApiValue(rawValue) : null,
-    max_depth: Number(document.getElementById("apiDepth").value || 1),
+    max_depth: 10,
     include_variables: true,
     include_objects: true,
   };
@@ -311,82 +296,6 @@ function renderConnections(connections, readinessEndpoints = []) {
   }
 }
 
-function renderBrowseTree() {
-  const root = document.getElementById("browseTree");
-  const items = state.browseItems;
-
-  if (!items.length) {
-    root.innerHTML = `<div class="tree-empty">Нажмите Browse, чтобы загрузить дерево.</div>`;
-    return;
-  }
-
-  const byParent = new Map();
-  for (const item of items) {
-    const key = item.parent_node_id ?? "__root__";
-    const bucket = byParent.get(key) || [];
-    bucket.push(item);
-    byParent.set(key, bucket);
-  }
-
-  const renderBranch = (parentId, level) => {
-    const nodes = byParent.get(parentId) || [];
-    return nodes
-      .map((item) => {
-        const children = byParent.get(item.node_id) || [];
-        const expandable = children.length > 0;
-        const expanded = state.browseExpanded.has(item.node_id);
-        const label = item.display_name || item.browse_name || item.node_id;
-        const meta = [];
-        if (item.node_class) meta.push(item.node_class);
-        if (item.data_type) meta.push(item.data_type);
-        if (item.access_level?.length) meta.push(item.access_level.join(", "));
-
-        return `
-          <div class="tree-row" style="padding-left: ${8 + level * 18}px">
-            ${
-              expandable
-                ? `<button class="tree-toggle" type="button" data-node-id="${escapeHtml(item.node_id)}">${expanded ? "−" : "+"}</button>`
-                : `<span class="tree-spacer"></span>`
-            }
-            <div class="tree-content" data-select-node-id="${escapeHtml(item.node_id)}" data-select-endpoint-id="${escapeHtml(document.getElementById("apiEndpoint").value || "")}">
-              <div class="tree-title">
-                <span class="tree-name">${escapeHtml(label)}</span>
-                <span class="tree-class">${escapeHtml(item.node_class || "")}</span>
-              </div>
-              <div class="tree-meta">${meta.map((part) => `<span>${escapeHtml(part)}</span>`).join("")}</div>
-              <div class="tree-node-id">${escapeHtml(item.node_id)}</div>
-            </div>
-          </div>
-          ${expandable && expanded ? renderBranch(item.node_id, level + 1) : ""}
-        `;
-      })
-      .join("");
-  };
-
-  root.innerHTML = `<div class="tree-list">${renderBranch("__root__", 0)}</div>`;
-
-  for (const button of root.querySelectorAll("[data-node-id]")) {
-    button.addEventListener("click", (event) => {
-      const nodeId = event.currentTarget.dataset.nodeId;
-      if (!nodeId) return;
-      if (state.browseExpanded.has(nodeId)) {
-        state.browseExpanded.delete(nodeId);
-      } else {
-        state.browseExpanded.add(nodeId);
-      }
-      renderBrowseTree();
-    });
-  }
-
-  for (const element of root.querySelectorAll("[data-select-node-id]")) {
-    element.addEventListener("click", (event) => {
-      const nodeId = event.currentTarget.dataset.selectNodeId;
-      const endpointId = event.currentTarget.dataset.selectEndpointId;
-      if (endpointId) document.getElementById("apiEndpoint").value = endpointId;
-      if (nodeId) document.getElementById("apiNodeId").value = nodeId;
-    });
-  }
-}
 
 function escapeHtml(value) {
   return String(value)
@@ -417,6 +326,8 @@ function updatePendingConfigChanges() {
 function clearConfigSelection() {
   state.selectedBrowseNode = null;
   state.selectedDictParamId = null;
+  state.pendingAssignNodeId = null;
+  state.pendingAssignGroupId = null;
 }
 
 function buildDraftStatusMessage() {
@@ -447,7 +358,7 @@ function renderNodes(nodes) {
           node.endpoint_id,
           node.acquisition_mode,
           node.read?.data_type,
-          node.read?.value,
+          String(node.read?.value ?? ""),
         ].join(" ").toLowerCase();
         return haystack.includes(query);
       })
@@ -460,19 +371,21 @@ function renderNodes(nodes) {
   }
 
   for (const node of visibleNodes) {
-    const status = node.status;
+    const s = node.status;
     const read = node.read;
-    const active = Boolean(status?.active);
+    const active = Boolean(s?.active);
+    const quality = read?.status_code || "-";
+    const qualityOk = quality === "Good" || quality === "-";
     const row = document.createElement("tr");
     row.innerHTML = `
-      <td class="mono">${node.parameter_code || "-"}</td>
-      <td class="node-id">${node.node_id || "-"}</td>
-      <td class="mono">${node.endpoint_id || "-"}</td>
-      <td>${node.acquisition_mode || "-"}</td>
-      <td><span class="value">${formatValue(read?.value)}</span>${node.read_error ? `<div class="muted">${node.read_error}</div>` : ""}</td>
-      <td>${read?.status_code || "-"}</td>
-      <td>${formatDate(read?.source_timestamp || status?.last_value_at)}</td>
-      <td><span class="badge ${active ? "badge-ok" : "badge-muted"}">${active ? "active" : "inactive"}</span></td>
+      <td class="nt-status"><span class="badge ${active ? "badge-ok" : "badge-muted"}">${active ? "active" : "inactive"}</span></td>
+      <td class="nt-param">${escapeHtml(node.parameter_code || "-")}</td>
+      <td class="nt-value"><span class="nt-val-text">${escapeHtml(formatValue(read?.value))}</span>${node.read_error ? `<div class="nt-err">${escapeHtml(node.read_error)}</div>` : ""}</td>
+      <td class="nt-quality ${qualityOk ? "" : "nt-quality-bad"}">${escapeHtml(quality)}</td>
+      <td class="nt-time">${escapeHtml(formatDate(read?.source_timestamp || s?.last_value_at))}</td>
+      <td class="nt-nodeid" title="${escapeHtml(node.node_id || "")}"><code>${escapeHtml(node.node_id || "-")}</code></td>
+      <td class="nt-endpoint" title="${escapeHtml(node.endpoint_id || "")}">${escapeHtml(node.endpoint_id || "-")}</td>
+      <td class="nt-mode">${escapeHtml(node.acquisition_mode || "-")}</td>
     `;
     row.addEventListener("click", () => {
       document.getElementById("apiEndpoint").value = node.endpoint_id || "";
@@ -529,8 +442,6 @@ async function loadConfigurationPage() {
 
 async function browseForConfig() {
   const endpointId = document.getElementById("configEndpoint").value;
-  const nodeId = document.getElementById("configNodeId").value.trim();
-  const depth = Number(document.getElementById("configDepth").value || 2);
   if (!endpointId) {
     setConfigStatus("Выберите endpoint для browse.", "warn");
     return;
@@ -538,11 +449,10 @@ async function browseForConfig() {
   setConfigStatus("Загружаю дерево OPC UA...", "info");
   const params = new URLSearchParams({
     endpoint_id: endpointId,
-    max_depth: String(depth),
+    max_depth: "5",
     include_variables: "true",
     include_objects: "true",
   });
-  if (nodeId) params.set("node_id", nodeId);
   const response = await fetchJson(`/api/browse?${params.toString()}`);
   state.configBrowseItems = Array.isArray(response.items) ? response.items : [];
   state.configBrowseExpanded = new Set(
@@ -554,6 +464,26 @@ async function browseForConfig() {
   setText("configBrowseMeta", `${state.configBrowseItems.length} узлов · ${variableCount} variable`);
   setConfigStatus(`Дерево загружено: ${state.configBrowseItems.length} узлов, из них ${variableCount} variable.`, "success");
   renderConfigBrowseTree();
+}
+
+function getTreeVisibleIds(items, query) {
+  const q = query.toLowerCase();
+  const matchingIds = new Set();
+  for (const item of items) {
+    const name = (item.display_name || item.browse_name || item.node_id).toLowerCase();
+    if (name.includes(q)) matchingIds.add(item.node_id);
+  }
+  if (!matchingIds.size) return { visible: new Set(), matching: matchingIds };
+  const byId = new Map(items.map((i) => [i.node_id, i]));
+  const visible = new Set(matchingIds);
+  for (const id of matchingIds) {
+    let cur = byId.get(id);
+    while (cur?.parent_node_id && !visible.has(cur.parent_node_id)) {
+      visible.add(cur.parent_node_id);
+      cur = byId.get(cur.parent_node_id);
+    }
+  }
+  return { visible, matching: matchingIds };
 }
 
 function renderConfigBrowseTree() {
@@ -573,18 +503,42 @@ function renderConfigBrowseTree() {
   }
 
   const endpointId = document.getElementById("configEndpoint").value || "";
+  const treeFilter = state.configTreeFilter.trim();
+  const { visible: visibleIds, matching: matchingIds } = treeFilter
+    ? getTreeVisibleIds(items, treeFilter)
+    : { visible: null, matching: null };
+
+  const wsNodeIds = new Set(state.draftNodes.filter((n) => n.endpoint_id === endpointId).map((n) => n.node_id));
+  // Direct-parent marking: only the immediate parent of a workspace node gets the green indicator,
+  // not all transitive ancestors (prevents Objects/Server from being incorrectly highlighted)
+  const wsParentIds = new Set();
+  for (const item of items) {
+    if (wsNodeIds.has(item.node_id) && item.parent_node_id) {
+      wsParentIds.add(item.parent_node_id);
+    }
+  }
+
   const renderBranch = (parentId, level) => {
-    const nodes = byParent.get(parentId) || [];
+    let nodes = byParent.get(parentId) || [];
+    if (visibleIds) nodes = nodes.filter((n) => visibleIds.has(n.node_id));
     return nodes
       .map((item) => {
         const children = byParent.get(item.node_id) || [];
         const expandable = children.length > 0;
-        const expanded = state.configBrowseExpanded.has(item.node_id);
-        const draggable = item.node_class === "Variable";
-        const selected = state.selectedBrowseNode?.endpoint_id === endpointId && state.selectedBrowseNode?.node_id === item.node_id;
+        const expanded = visibleIds ? expandable : state.configBrowseExpanded.has(item.node_id);
+        const isVariable = item.node_class === "Variable";
+        const isObject = item.node_class === "Object";
+        const inWorkspace = wsNodeIds.has(item.node_id);
+        const parentInWs = wsParentIds.has(item.node_id);
         const mapped = hasPersistedMappingForBrowseNode(endpointId, item.node_id);
-        const label = item.display_name || item.browse_name || item.node_id;
-        const meta = [item.node_class, item.data_type].filter(Boolean);
+        const rawLabel = item.display_name || item.browse_name || item.node_id;
+        const isMatch = matchingIds?.has(item.node_id);
+        const label = isMatch
+          ? `<span class="tree-name-match">${escapeHtml(rawLabel)}</span>`
+          : escapeHtml(rawLabel);
+        const nodeJson = escapeHtml(JSON.stringify({ ...item, endpoint_id: endpointId }));
+        const showAllBtn = isObject || (isVariable && expandable);
+        const highlight = inWorkspace || parentInWs;
         return `
           <div class="tree-row" style="padding-left: ${8 + level * 18}px">
             ${
@@ -592,13 +546,16 @@ function renderConfigBrowseTree() {
                 ? `<button class="tree-toggle" type="button" data-config-toggle="${escapeHtml(item.node_id)}">${expanded ? "−" : "+"}</button>`
                 : `<span class="tree-spacer"></span>`
             }
-            <div class="tree-content config-tree-content ${draggable ? "tree-content-draggable" : "tree-content-static"} ${selected ? "selected" : ""}" ${draggable ? 'draggable="true"' : ""} data-config-node='${escapeHtml(JSON.stringify({ ...item, endpoint_id: endpointId }))}'>
+            <div class="tree-content config-tree-content ${isVariable ? "tree-node-variable" : "tree-content-static"} ${highlight ? "in-workspace" : ""}"
+              data-config-node='${nodeJson}'
+              ${isVariable ? `draggable="true" data-drag-node='${nodeJson}'` : ""}>
               <div class="tree-title">
-                <span class="tree-name">${escapeHtml(label)}</span>
+                <span class="tree-name">${label}</span>
                 <span class="tree-class">${escapeHtml(item.node_class || "")}</span>
+                ${highlight ? `<span class="ws-dot" title="В рабочей области"></span>` : ""}
                 ${mapped ? `<span class="inline-badge">mapped</span>` : ""}
+                ${showAllBtn ? `<button class="group-subscribe-btn" type="button" data-group-subscribe='${nodeJson}'>&#8627; all</button>` : ""}
               </div>
-              <div class="tree-meta">${meta.map((part) => `<span>${escapeHtml(part)}</span>`).join("")}</div>
               <div class="tree-node-id">${escapeHtml(item.node_id)}</div>
             </div>
           </div>
@@ -608,7 +565,10 @@ function renderConfigBrowseTree() {
       .join("");
   };
 
-  root.innerHTML = `<div class="tree-list">${renderBranch("__root__", 0)}</div>`;
+  const emptyMsg = treeFilter && visibleIds?.size === 0
+    ? `<div class="tree-empty">Ничего не найдено по «${escapeHtml(treeFilter)}».</div>`
+    : "";
+  root.innerHTML = emptyMsg || `<div class="tree-list">${renderBranch("__root__", 0)}</div>`;
 
   for (const button of root.querySelectorAll("[data-config-toggle]")) {
     button.addEventListener("click", (event) => {
@@ -623,25 +583,152 @@ function renderConfigBrowseTree() {
   }
 
   for (const element of root.querySelectorAll("[data-config-node]")) {
-    element.addEventListener("click", () => {
+    element.addEventListener("click", (event) => {
+      if (event.target.closest("[data-group-subscribe]")) return;
       const clickedNode = JSON.parse(element.dataset.configNode);
-      state.selectedBrowseNode = isSameBrowseNode(state.selectedBrowseNode, clickedNode) ? null : clickedNode;
-      renderConfigBrowseTree();
-      renderSelectionBridge();
-      setConfigStatus(buildSelectionStatusMessage(), "info");
+      if (clickedNode.node_class !== "Variable") return;
+      const endpointId = clickedNode.endpoint_id;
+      const alreadyAdded = state.draftNodes.some((n) => n.endpoint_id === endpointId && n.node_id === clickedNode.node_id);
+      if (!alreadyAdded) {
+        addBrowseNodeToDraft(clickedNode);
+      } else {
+        setConfigStatus("Нода уже в рабочей области.", "info");
+      }
     });
-    element.addEventListener("dragstart", (event) => {
-      const payload = element.dataset.configNode;
-      event.dataTransfer.setData("application/json", payload);
+  }
+
+  for (const btn of root.querySelectorAll("[data-group-subscribe]")) {
+    btn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const nodeData = JSON.parse(btn.dataset.groupSubscribe);
+      await groupSubscribeObject(nodeData, btn);
+    });
+  }
+
+  for (const el of root.querySelectorAll("[data-drag-node]")) {
+    el.addEventListener("dragstart", (event) => {
       event.dataTransfer.effectAllowed = "copy";
-      state.selectedBrowseNode = JSON.parse(payload);
-      renderConfigBrowseTree();
-      renderSelectionBridge();
-      root.classList.add("is-dragging");
+      event.dataTransfer.setData("application/x-opc-node", el.dataset.dragNode);
     });
-    element.addEventListener("dragend", () => {
-      root.classList.remove("is-dragging");
+  }
+}
+
+
+function addBrowseNodeToDraft(browseNode, param, groupData) {
+  const endpointId = browseNode.endpoint_id;
+  const nodeId = makeNodeConfigId(endpointId, param?.name || browseNode.browse_name || browseNode.node_id);
+  state.draftNodes.push({
+    id: nodeId,
+    endpoint_id: endpointId,
+    node_id: browseNode.node_id,
+    browse_name: browseNode.browse_name || null,
+    display_name: browseNode.display_name || null,
+    dict_param_id: param?.id || null,
+    parameter_code: param?.name || null,
+    parameter_name: param?.description || param?.name || null,
+    acquisition_mode: "subscription",
+    read_enabled: true,
+    write_enabled: false,
+    sampling_interval_ms: 1000,
+    polling_interval_seconds: 5,
+    expected_type: param ? mapDatatypeToExpectedType(param.datatype_name) : null,
+    value_shape: "scalar",
+    unit: param?.unit_symbol || param?.unit_name || null,
+    group_id: groupData?.group_id || null,
+    group_path: groupData?.group_path || null,
+    group_display_name: groupData?.group_display_name || null,
+    value_transform: { scale_factor: 1, offset: 0, target_unit: param?.unit_symbol || param?.unit_name || null },
+    input_control: { stale_after_seconds: 30, suppress_duplicates: false },
+    metadata: {
+      opcua_browse_name: browseNode.browse_name || null,
+      opcua_display_name: browseNode.display_name || null,
+      opcua_data_type: browseNode.data_type || null,
+    },
+    tags: [],
+  });
+  updatePendingConfigChanges();
+}
+
+function addGroupFromItems(parentNodeId, groupPath, groupData, allItems, endpointId) {
+  const children = allItems.filter((item) => item.parent_node_id === parentNodeId);
+  for (const child of children) {
+    if (child.node_class === "Variable") {
+      // Add the variable itself to the current group
+      if (!state.draftNodes.some((n) => n.endpoint_id === endpointId && n.node_id === child.node_id)) {
+        const param = state.dictionary.find(
+          (p) => p.name === child.browse_name || p.name === child.display_name,
+        ) || null;
+        addBrowseNodeToDraft({ ...child, endpoint_id: endpointId }, param, groupData);
+      }
+      // If this variable has sub-variables (e.g. BuildInfo → ProductUri, SoftwareVersion…),
+      // recurse into them as a child sub-group, preserving hierarchy
+      const subChildren = allItems.filter((it) => it.parent_node_id === child.node_id);
+      if (subChildren.length > 0) {
+        const subName = child.browse_name || child.display_name || child.node_id;
+        const subPath = [...groupPath, subName];
+        addGroupFromItems(child.node_id, subPath, {
+          group_id: makeNodeConfigId(endpointId, subPath.join("/")),
+          group_path: subPath,
+          group_display_name: child.display_name || child.browse_name || child.node_id,
+        }, allItems, endpointId);
+      }
+    } else if (child.node_class === "Object") {
+      const subName = child.browse_name || child.display_name || child.node_id;
+      const subPath = [...groupPath, subName];
+      addGroupFromItems(child.node_id, subPath, {
+        group_id: makeNodeConfigId(endpointId, subPath.join("/")),
+        group_path: subPath,
+        group_display_name: child.display_name || child.browse_name || child.node_id,
+      }, allItems, endpointId);
+    }
+  }
+}
+
+async function groupSubscribeObject(parentNode, button) {
+  const endpointId = parentNode.endpoint_id || document.getElementById("configEndpoint").value;
+  setBusyState(button, true);
+  try {
+    const params = new URLSearchParams({
+      endpoint_id: endpointId,
+      node_id: parentNode.node_id,
+      max_depth: "5",
+      include_variables: "true",
+      include_objects: "true",
     });
+    const response = await fetchJson(`/api/browse?${params.toString()}`);
+    const allItems = Array.isArray(response.items) ? response.items : [];
+    if (!allItems.some((item) => item.node_class === "Variable")) {
+      setConfigStatus(`Нет Variable-нод в «${parentNode.display_name || parentNode.node_id}».`, "warn");
+      return;
+    }
+    const groupPath = [parentNode.browse_name || parentNode.display_name || parentNode.node_id];
+    const groupId = makeNodeConfigId(endpointId, groupPath.join("/"));
+    const groupData = {
+      group_id: groupId,
+      group_path: groupPath,
+      group_display_name: parentNode.display_name || parentNode.browse_name || parentNode.node_id,
+    };
+    const beforeCount = state.draftNodes.length;
+    addGroupFromItems(parentNode.node_id, groupPath, groupData, allItems, endpointId);
+    const addedCount = state.draftNodes.length - beforeCount;
+    const totalVars = allItems.filter((item) => item.node_class === "Variable").length;
+    const skipped = totalVars - addedCount;
+    const unbound = state.draftNodes.slice(beforeCount).filter((n) => !n.parameter_code).length;
+    const parts = [];
+    if (addedCount - unbound > 0) parts.push(`${addedCount - unbound} привязано к параметру`);
+    if (unbound > 0) parts.push(`${unbound} без параметра — назначьте вручную`);
+    if (skipped > 0) parts.push(`${skipped} уже в рабочей области`);
+    setConfigStatus(
+      `«${groupData.group_display_name}»: ${parts.length ? parts.join(", ") : "нет новых нод"}.`,
+      unbound > 0 ? "warn" : "success",
+    );
+    renderMappings();
+    renderConfigBrowseTree();
+    renderDictionary();
+  } catch (error) {
+    setConfigStatus(`Ошибка: ${error.message}`, "error");
+  } finally {
+    setBusyState(button, false);
   }
 }
 
@@ -685,56 +772,107 @@ function renderDictionary() {
     .join("");
 
   for (const card of root.querySelectorAll("[data-dict-id]")) {
-    card.addEventListener("dragover", (event) => {
-      event.preventDefault();
-      card.classList.add("drop-target");
-    });
-    card.addEventListener("dragenter", (event) => {
-      event.preventDefault();
-      card.classList.add("drop-target");
-    });
-    card.addEventListener("dragleave", () => card.classList.remove("drop-target"));
-    card.addEventListener("drop", (event) => {
-      event.preventDefault();
-      card.classList.remove("drop-target");
-      const raw = event.dataTransfer.getData("application/json");
-      if (!raw) return;
-      assignNodeToParam(JSON.parse(raw), card.dataset.dictId);
-    });
     card.addEventListener("click", () => {
+      if (state.pendingAssignGroupId) {
+        assignParamToGroup(state.pendingAssignGroupId, card.dataset.dictId);
+        return;
+      }
+      if (state.pendingAssignNodeId) {
+        assignParamToDraftNode(state.pendingAssignNodeId, card.dataset.dictId);
+        return;
+      }
       state.selectedDictParamId = state.selectedDictParamId === card.dataset.dictId ? null : card.dataset.dictId;
       renderDictionary();
-      renderSelectionBridge();
-      setConfigStatus(buildSelectionStatusMessage(), "info");
     });
   }
 }
 
 function renderSelectionBridge() {
-  const selectedNodeCard = document.getElementById("selectedNodeCard");
-  const selectedParamCard = document.getElementById("selectedParamCard");
-  const bindButton = document.getElementById("bindSelectionButton");
+  // selection-bridge UI is currently commented out in HTML
+}
 
-  const node = state.selectedBrowseNode;
-  const param = state.dictionary.find((item) => item.id === state.selectedDictParamId) || null;
+function openDictModal(title = "Справочник параметров") {
+  const titleEl = document.querySelector(".dict-modal-title");
+  if (titleEl) titleEl.textContent = title;
+  const overlay = document.getElementById("dictModalOverlay");
+  if (overlay) overlay.classList.remove("hidden");
+  renderDictionary();
+  document.getElementById("dictFilter")?.focus();
+}
 
-  selectedNodeCard.classList.toggle("filled", Boolean(node));
-  selectedParamCard.classList.toggle("filled", Boolean(param));
+function closeDictModal() {
+  const overlay = document.getElementById("dictModalOverlay");
+  if (overlay) overlay.classList.add("hidden");
+}
 
-  setText("selectedNodeTitle", node?.display_name || node?.browse_name || node?.node_id || "Не выбрана");
-  setText(
-    "selectedNodeMeta",
-    node ? `${node.endpoint_id || "-"} · ${node.node_class || "-"} · ${node.node_id}` : "Выберите variable-ноду в дереве слева.",
-  );
-  setText("selectedParamTitle", param?.name || "Не выбран");
-  setText(
-    "selectedParamMeta",
-    param
-      ? `${param.description || "-"} · ${param.datatype_name || "-"} · ${param.unit_symbol || param.unit_name || "без единиц"}`
-      : "Выберите параметр в справочнике справа.",
-  );
+function assignParamToDraftNode(nodeId, dictParamId) {
+  const param = state.dictionary.find((item) => item.id === dictParamId);
+  const idx = state.draftNodes.findIndex((n) => n.id === nodeId);
+  if (!param || idx < 0) return;
+  const node = state.draftNodes[idx];
+  state.draftNodes[idx] = {
+    ...node,
+    dict_param_id: param.id,
+    parameter_code: param.name,
+    parameter_name: param.description || param.name,
+    expected_type: mapDatatypeToExpectedType(param.datatype_name),
+    unit: param.unit_symbol || param.unit_name || null,
+    value_transform: {
+      ...(node.value_transform || {}),
+      target_unit: param.unit_symbol || param.unit_name || null,
+    },
+    metadata: {
+      ...(node.metadata || {}),
+      dict_param_name: param.name,
+      dict_param_description: param.description || null,
+    },
+  };
+  state.pendingAssignNodeId = null;
+  closeDictModal();
+  updatePendingConfigChanges();
+  renderMappings();
+  renderConfigBrowseTree();
+  setConfigStatus(`Параметр «${param.name}» назначен. Не забудьте сохранить.`, "warn");
+}
 
-  bindButton.disabled = !(node && param);
+function assignParamToGroup(groupId, dictParamId) {
+  const param = state.dictionary.find((item) => item.id === dictParamId);
+  if (!param) return;
+  const currentEndpoint = document.getElementById("configEndpoint")?.value || "";
+  const baseNode = state.draftNodes.find((n) => n.group_id === groupId);
+  if (!baseNode) return;
+  const basePath = Array.isArray(baseNode.group_path) && baseNode.group_path.length > 0
+    ? baseNode.group_path
+    : null;
+  // Assign to nodes in this group AND all descendant groups (group_path starts with basePath)
+  const groupNodes = state.draftNodes.filter((n) => {
+    if (currentEndpoint && n.endpoint_id !== currentEndpoint) return false;
+    if (!basePath) return n.group_id === groupId; // no path info: exact group_id match only
+    if (!n.group_path) return n.group_id === groupId;
+    if (n.group_path.length < basePath.length) return false;
+    return basePath.every((seg, i) => seg === n.group_path[i]);
+  });
+  for (const node of groupNodes) {
+    const idx = state.draftNodes.indexOf(node);
+    if (idx < 0) continue;
+    state.draftNodes[idx] = {
+      ...node,
+      dict_param_id: param.id,
+      parameter_code: param.name,
+      parameter_name: param.description || param.name,
+      expected_type: mapDatatypeToExpectedType(param.datatype_name),
+      unit: param.unit_symbol || param.unit_name || null,
+      value_transform: { ...(node.value_transform || {}), target_unit: param.unit_symbol || param.unit_name || null },
+      metadata: { ...(node.metadata || {}), dict_param_name: param.name, dict_param_description: param.description || null },
+    };
+  }
+  state.pendingAssignGroupId = null;
+  closeDictModal();
+  updatePendingConfigChanges();
+  renderMappings();
+  renderConfigBrowseTree();
+  const groupName = baseNode?.group_display_name || groupId;
+  setConfigStatus(`Параметр «${param.name}» назначен ${groupNodes.length} нодам группы «${groupName}». Не забудьте сохранить.`, "warn");
 }
 
 function assignSelectedPair() {
@@ -807,44 +945,210 @@ function assignNodeToParam(browseNode, dictParamId) {
 
 function renderMappings() {
   const root = document.getElementById("mappingList");
-  setText("mappingMeta", `${state.draftNodes.length} нод`);
-  if (!state.draftNodes.length) {
-    root.innerHTML = `<div class="tree-empty">Привязки еще не настроены.</div>`;
+  const filterEl = document.getElementById("mappingFilter");
+  const filterText = filterEl ? filterEl.value.toLowerCase() : "";
+  const dictCodes = new Set(state.dictionary.map((p) => p.name));
+  const currentEndpoint = document.getElementById("configEndpoint")?.value || "";
+  const endpointNodes = currentEndpoint
+    ? state.draftNodes.filter((n) => n.endpoint_id === currentEndpoint)
+    : state.draftNodes;
+
+  setText("mappingMeta", `${endpointNodes.length} нод`);
+
+  if (!endpointNodes.length) {
+    root.innerHTML = `<tr><td colspan="6" class="ua-table-empty">Нет нод. Кликните или перетащите Variable-ноду из дерева${currentEndpoint ? ` (${currentEndpoint})` : ""}.</td></tr>`;
     return;
   }
-  root.innerHTML = state.draftNodes
-    .map((node) => {
-      const changed = JSON.stringify(node) !== JSON.stringify(state.configNodes.find((item) => item.id === node.id));
-      return `
-        <article class="mapping-card ${changed ? "changed" : ""}">
-          <div>
-            <div class="mapping-name">${escapeHtml(node.parameter_code || node.id)}</div>
-            <div class="mapping-node">${escapeHtml(node.node_id)}</div>
-            <div class="mapping-meta">
-              <span>${escapeHtml(node.endpoint_id)}</span>
-              <span>${escapeHtml(node.acquisition_mode)}</span>
-              <span>${escapeHtml(node.expected_type || "-")}</span>
-              <span>${escapeHtml(node.unit || "без единиц")}</span>
-            </div>
+
+  const filtered = filterText
+    ? endpointNodes.filter(
+        (n) =>
+          (n.parameter_code || "").toLowerCase().includes(filterText) ||
+          (n.node_id || "").toLowerCase().includes(filterText) ||
+          (n.browse_name || "").toLowerCase().includes(filterText) ||
+          (n.group_display_name || "").toLowerCase().includes(filterText),
+      )
+    : endpointNodes;
+
+  const makeNodeRow = (node, rowIdx, depth = 0) => {
+    const savedNode = state.configNodes.find((item) => item.id === node.id);
+    const isNew = !savedNode;
+    const isChanged = savedNode && JSON.stringify(node) !== JSON.stringify(savedNode);
+    const hasParam = node.parameter_code && dictCodes.has(node.parameter_code);
+    const isPending = state.pendingAssignNodeId === node.id;
+    const rowClass = isPending ? "pending-assign" : isNew ? "status-new" : isChanged ? "status-changed" : "status-saved";
+    const paramCell = hasParam
+      ? `<span class="ua-param-code">${escapeHtml(node.parameter_code)}</span>
+         ${node.parameter_name && node.parameter_name !== node.parameter_code ? `<span class="ua-param-name">${escapeHtml(node.parameter_name)}</span>` : ""}`
+      : isPending
+        ? `<span class="assign-hint">↑ выберите в справочнике</span>`
+        : `<button class="ua-assign-btn" type="button" data-assign-node="${escapeHtml(node.id)}">Назначить</button>`;
+    const indentPx = 4 + depth * 14;
+    return `
+      <tr class="ua-row ${rowClass}" data-node-id="${escapeHtml(node.id)}">
+        <td class="col-num" style="padding-left:${indentPx}px">${rowIdx}</td>
+        <td class="col-nodeid" title="${escapeHtml(node.node_id + (node.browse_name ? '\n' + node.browse_name : ''))}"><code>${escapeHtml(node.node_id)}</code>
+          ${node.browse_name ? `<span class="ua-browse-name">${escapeHtml(node.browse_name)}</span>` : ""}
+        </td>
+        <td class="col-param-cell" ${hasParam ? `title="${escapeHtml(node.parameter_code + (node.parameter_name && node.parameter_name !== node.parameter_code ? '\n' + node.parameter_name : ''))}"` : ""}>${paramCell}</td>
+        <td class="col-mode">${escapeHtml(node.acquisition_mode || "-")}</td>
+        <td class="col-type">${escapeHtml(node.expected_type || "-")}</td>
+        <td class="col-del"><button class="ua-del-btn" type="button" data-remove-node="${escapeHtml(node.id)}" title="Удалить">×</button></td>
+      </tr>`;
+  };
+
+  // Build group map keyed by group_id
+  const groupMap = new Map();
+  const ungrouped = [];
+  for (const node of filtered) {
+    if (node.group_id) {
+      if (!groupMap.has(node.group_id)) {
+        groupMap.set(node.group_id, {
+          group_id: node.group_id,
+          group_path: node.group_path || [],
+          display_name: node.group_display_name || node.group_id,
+          nodes: [],
+          children: [],
+        });
+      }
+      groupMap.get(node.group_id).nodes.push(node);
+    } else {
+      ungrouped.push(node);
+    }
+  }
+
+  // Build parent-child relationships from group_path prefix matching
+  const allGroups = [...groupMap.values()].sort((a, b) => a.group_path.length - b.group_path.length);
+  for (const group of allGroups) {
+    if (group.group_path.length < 2) continue;
+    const parentPath = group.group_path.slice(0, -1);
+    const parent = allGroups.find(
+      (g) => g.group_path.length === parentPath.length && parentPath.every((seg, i) => seg === g.group_path[i]),
+    );
+    if (parent) parent.children.push(group);
+  }
+  const topGroups = allGroups.filter((g) => {
+    if (g.group_path.length < 2) return true;
+    const parentPath = g.group_path.slice(0, -1);
+    return !allGroups.some(
+      (other) => other !== g && other.group_path.length === parentPath.length && parentPath.every((seg, i) => seg === other.group_path[i]),
+    );
+  });
+
+  function countNodes(group) {
+    return group.nodes.length + group.children.reduce((s, c) => s + countNodes(c), 0);
+  }
+  function hasUnbound(group) {
+    return (
+      group.nodes.some((n) => !n.parameter_code || !dictCodes.has(n.parameter_code)) ||
+      group.children.some((c) => hasUnbound(c))
+    );
+  }
+
+  let html = "";
+
+  function renderGroup(group, depth) {
+    const isCollapsed = state.workspaceCollapsed.has(group.group_id);
+    const totalCount = countNodes(group);
+    const unbound = hasUnbound(group);
+    // Always show full path so the name is never empty
+    const pathLabel = Array.isArray(group.group_path) && group.group_path.length > 0
+      ? group.group_path.join(" / ")
+      : (group.display_name || group.group_id);
+    html += `
+      <tr class="ua-group-header${depth > 0 ? " ua-group-sub" : ""}">
+        <td colspan="6" class="ua-group-cell">
+          <div class="ua-group-inner" style="padding-left:${8 + depth * 14}px">
+            <button class="ua-group-toggle" type="button" data-toggle-group="${escapeHtml(group.group_id)}">${isCollapsed ? "▶" : "▼"}</button>
+            <span class="ua-group-name-text" title="${escapeHtml(pathLabel)}">${escapeHtml(pathLabel)}</span>
+            <span class="ua-group-count">${totalCount} нод</span>
+            <button class="ua-assign-group-btn ${unbound ? "has-unbound" : ""}" type="button"
+              data-assign-group="${escapeHtml(group.group_id)}"
+              data-group-name="${escapeHtml(pathLabel)}">Назначить всем</button>
           </div>
-          <button class="mapping-remove" type="button" data-remove-node="${escapeHtml(node.id)}">Удалить</button>
-        </article>
-      `;
-    })
-    .join("");
+        </td>
+      </tr>`;
+    if (!isCollapsed) {
+      let localIdx = 0;
+      for (const node of group.nodes) {
+        localIdx++;
+        html += makeNodeRow(node, localIdx, depth + 1);
+      }
+      for (const child of group.children) {
+        renderGroup(child, depth + 1);
+      }
+    }
+  }
+
+  for (const group of topGroups) {
+    renderGroup(group, 0);
+  }
+  let ungroupedIdx = 0;
+  for (const node of ungrouped) {
+    ungroupedIdx++;
+    html += makeNodeRow(node, ungroupedIdx, 0);
+  }
+
+  root.innerHTML = html;
+
+  for (const button of root.querySelectorAll("[data-toggle-group]")) {
+    button.addEventListener("click", () => {
+      const gid = button.dataset.toggleGroup;
+      if (state.workspaceCollapsed.has(gid)) {
+        state.workspaceCollapsed.delete(gid);
+      } else {
+        state.workspaceCollapsed.add(gid);
+      }
+      renderMappings();
+    });
+  }
 
   for (const button of root.querySelectorAll("[data-remove-node]")) {
     button.addEventListener("click", () => {
+      if (state.pendingAssignNodeId === button.dataset.removeNode) state.pendingAssignNodeId = null;
       state.draftNodes = state.draftNodes.filter((node) => node.id !== button.dataset.removeNode);
       updatePendingConfigChanges();
-      setConfigStatus("Привязка удалена из черновика. Не забудьте сохранить изменения в клиент.", "warn");
-      renderDictionary();
+      setConfigStatus("Нода удалена из черновика.", "warn");
+      renderConfigBrowseTree();
       renderMappings();
+    });
+  }
+
+  for (const button of root.querySelectorAll("[data-assign-node]")) {
+    button.addEventListener("click", () => {
+      state.pendingAssignNodeId = button.dataset.assignNode;
+      state.pendingAssignGroupId = null;
+      renderMappings();
+      openDictModal();
+    });
+  }
+
+  for (const button of root.querySelectorAll("[data-assign-group]")) {
+    button.addEventListener("click", () => {
+      state.pendingAssignGroupId = button.dataset.assignGroup;
+      state.pendingAssignNodeId = null;
+      openDictModal(`Назначить всем в «${button.dataset.groupName}»`);
     });
   }
 }
 
 async function saveConfiguration() {
+  const dictCodes = new Set(state.dictionary.map((p) => p.name));
+  // Validate only nodes for the current endpoint — other endpoints' nodes are preserved as-is
+  const currentEndpoint = document.getElementById("configEndpoint")?.value || "";
+  const scopedNodes = currentEndpoint
+    ? state.draftNodes.filter((n) => n.endpoint_id === currentEndpoint)
+    : state.draftNodes;
+  const unbound = scopedNodes.filter((n) => !n.parameter_code || !dictCodes.has(n.parameter_code));
+  if (unbound.length) {
+    const ids = unbound.map((n) => n.parameter_code || n.id).join(", ");
+    setConfigStatus(
+      `Невозможно сохранить: ${unbound.length} нод не привязаны к параметру из справочника (${ids}). Удалите их или замените на привязанные.`,
+      "error",
+    );
+    return;
+  }
+
   const response = await fetchJson("/api/config/nodes", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -890,15 +1194,17 @@ for (const button of document.querySelectorAll("[data-page-target]")) {
     if (button.dataset.pageTarget === "config" && !state.dictionary.length) {
       await loadConfigurationPage().catch((error) => setConfigStatus(error.message, "error"));
     }
+    if (button.dataset.pageTarget === "sources" && !state.sourcesLoaded) {
+      await loadSourcesPage().catch((error) => setSourcesStatus(error.message, "error"));
+    }
   });
 }
 document.getElementById("nodeFilter").addEventListener("input", (event) => {
   state.filter = event.target.value;
   if (state.snapshot) renderNodes(state.snapshot.nodes);
 });
-document.getElementById("dictFilter").addEventListener("input", (event) => {
-  state.dictFilter = event.target.value;
-  renderDictionary();
+document.getElementById("mappingFilter").addEventListener("input", () => {
+  renderMappings();
 });
 document.getElementById("loadConfigButton").addEventListener("click", () => {
   const button = document.getElementById("loadConfigButton");
@@ -912,8 +1218,79 @@ document.getElementById("configBrowseButton").addEventListener("click", () => {
   const button = document.getElementById("configBrowseButton");
   withBusy(button, browseForConfig).catch((error) => setConfigStatus(error.message, "error"));
 });
-document.getElementById("bindSelectionButton").addEventListener("click", () => {
+document.getElementById("bindSelectionButton")?.addEventListener("click", () => {
   assignSelectedPair();
+});
+
+// Drop zone for drag-and-drop from tree
+(function setupDropZone() {
+  const zone = document.querySelector(".mapping-workspace-col");
+  if (!zone) return;
+  let dragCounter = 0;
+  zone.addEventListener("dragenter", (event) => {
+    if (!event.dataTransfer.types.includes("application/x-opc-node")) return;
+    dragCounter++;
+    zone.classList.add("drag-over");
+  });
+  zone.addEventListener("dragover", (event) => {
+    if (!event.dataTransfer.types.includes("application/x-opc-node")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  });
+  zone.addEventListener("dragleave", () => {
+    dragCounter--;
+    if (dragCounter <= 0) { dragCounter = 0; zone.classList.remove("drag-over"); }
+  });
+  zone.addEventListener("drop", (event) => {
+    dragCounter = 0;
+    zone.classList.remove("drag-over");
+    const raw = event.dataTransfer.getData("application/x-opc-node");
+    if (!raw) return;
+    event.preventDefault();
+    try {
+      const node = JSON.parse(raw);
+      const endpointId = node.endpoint_id || document.getElementById("configEndpoint").value;
+      if (state.draftNodes.some((n) => n.endpoint_id === endpointId && n.node_id === node.node_id)) {
+        setConfigStatus("Нода уже в рабочей области.", "info");
+        return;
+      }
+      addBrowseNodeToDraft({ ...node, endpoint_id: endpointId });
+      renderMappings();
+      renderConfigBrowseTree();
+    } catch { /* ignore malformed data */ }
+  });
+})();
+
+// Re-render working area when endpoint selection changes
+document.getElementById("configEndpoint")?.addEventListener("change", () => {
+  renderMappings();
+  renderConfigBrowseTree();
+});
+
+// Tree search
+document.getElementById("configTreeSearch")?.addEventListener("input", (event) => {
+  state.configTreeFilter = event.target.value;
+  renderConfigBrowseTree();
+});
+
+// Dict modal close
+document.getElementById("dictModalClose")?.addEventListener("click", () => {
+  state.pendingAssignNodeId = null;
+  state.pendingAssignGroupId = null;
+  closeDictModal();
+  renderMappings();
+});
+document.getElementById("dictModalOverlay")?.addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) {
+    state.pendingAssignNodeId = null;
+    state.pendingAssignGroupId = null;
+    closeDictModal();
+    renderMappings();
+  }
+});
+document.getElementById("dictFilter")?.addEventListener("input", (event) => {
+  state.dictFilter = event.target.value;
+  renderDictionary();
 });
 
 switchPage(state.activePage);
@@ -928,6 +1305,247 @@ Promise.all([loadOperations(), fetchSnapshot()]).catch((error) => {
 renderBrowseTree();
 renderConfigBrowseTree();
 renderSelectionBridge();
+
+// ── Sources page ──────────────────────────────────────────────────────────────
+
+state.endpoints = [];
+state.sourcesLoaded = false;
+state.editingEndpointId = null;
+state.editingEndpoint = null;
+
+function setSourcesStatus(message, tone = "info") {
+  const element = document.getElementById("sourcesStatus");
+  if (!element) return;
+  element.textContent = message;
+  element.className = `config-status tone-${tone}`;
+  element.classList.toggle("hidden", !message);
+}
+
+async function loadSourcesPage() {
+  setSourcesStatus("Загрузка списка источников...", "info");
+  try {
+    const response = await fetchJson("/api/config/endpoints");
+    state.endpoints = Array.isArray(response.endpoints) ? response.endpoints : [];
+    state.sourcesLoaded = true;
+    setSourcesStatus("", "info");
+    renderSourcesList();
+  } catch (error) {
+    setSourcesStatus(`Ошибка загрузки: ${error.message}`, "error");
+  }
+}
+
+function getEndpointConnectionStatus(endpointId) {
+  if (!state.snapshot?.connections) return null;
+  return state.snapshot.connections.find((c) => c.endpoint_id === endpointId) || null;
+}
+
+function renderSourcesList() {
+  const root = document.getElementById("endpointsList");
+  if (!root) return;
+  if (!state.endpoints.length) {
+    root.innerHTML = `<div class="tree-empty">Источники не настроены. Нажмите «+ Добавить источник».</div>`;
+    return;
+  }
+  root.innerHTML = state.endpoints.map((ep) => renderEndpointCardHtml(ep)).join("");
+
+  for (const editBtn of root.querySelectorAll("[data-edit-endpoint]")) {
+    editBtn.addEventListener("click", () => {
+      const ep = state.endpoints.find((e) => e.id === editBtn.dataset.editEndpoint);
+      if (ep) showEndpointForm(ep);
+    });
+  }
+  for (const delBtn of root.querySelectorAll("[data-delete-endpoint]")) {
+    delBtn.addEventListener("click", async () => {
+      const id = delBtn.dataset.deleteEndpoint;
+      if (
+        !confirm(
+          `Удалить источник «${id}»?\n\nВсе ноды этого источника будут автоматически удалены из конфигурации клиента.`,
+        )
+      )
+        return;
+      await deleteEndpoint(id, delBtn);
+    });
+  }
+}
+
+function renderEndpointCardHtml(ep) {
+  const connStatus = getEndpointConnectionStatus(ep.id);
+  const stateValue = connStatus?.state || (ep.enabled ? "unknown" : "disabled");
+  const badgeClass = ep.enabled ? statusBadge(stateValue, connStatus?.connected) : "badge-muted";
+  const badgeText = ep.enabled ? stateValue || "unknown" : "disabled";
+  const authText =
+    ep.auth?.mode === "username_password" ? `user: ${ep.auth?.username || "—"}` : "anonymous";
+  const lastError = connStatus?.last_error || "";
+  return `
+    <article class="endpoint-card">
+      <div class="endpoint-card-header">
+        <div class="endpoint-card-main">
+          <span class="badge ${badgeClass}">${escapeHtml(badgeText)}</span>
+          <strong class="endpoint-id">${escapeHtml(ep.id)}</strong>
+        </div>
+        <div class="endpoint-card-actions">
+          <button class="btn" type="button" data-edit-endpoint="${escapeHtml(ep.id)}">Изменить</button>
+          <button class="btn btn-danger" type="button" data-delete-endpoint="${escapeHtml(ep.id)}">Удалить</button>
+        </div>
+      </div>
+      <div class="endpoint-card-body">
+        <div class="endpoint-url mono">${escapeHtml(ep.url)}</div>
+        <div class="endpoint-meta">
+          <span>Auth: ${escapeHtml(authText)}</span>
+          ${ep.metadata?.source_id ? `<span>Source: ${escapeHtml(ep.metadata.source_id)}</span>` : ""}
+          ${ep.metadata?.owner_id ? `<span>Owner: ${escapeHtml(ep.metadata.owner_type || "")} / ${escapeHtml(ep.metadata.owner_id)}</span>` : ""}
+          ${connStatus?.reconnect_attempts ? `<span>Reconnects: ${connStatus.reconnect_attempts}</span>` : ""}
+          ${lastError ? `<span class="endpoint-error">Error: ${escapeHtml(lastError)}</span>` : ""}
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function showEndpointForm(endpoint = null) {
+  state.editingEndpointId = endpoint ? endpoint.id : null;
+  state.editingEndpoint = endpoint ? clone(endpoint) : null;
+
+  document.getElementById("endpointFormTitle").textContent = endpoint
+    ? `Редактирование: ${endpoint.id}`
+    : "Новый источник";
+
+  const efId = document.getElementById("efId");
+  efId.value = endpoint?.id || "";
+  efId.disabled = Boolean(endpoint);
+
+  document.getElementById("efUrl").value = endpoint?.url || "";
+  document.getElementById("efEnabled").checked = endpoint ? endpoint.enabled !== false : true;
+
+  const authMode = endpoint?.auth?.mode || "anonymous";
+  document.getElementById("efAuthMode").value = authMode;
+  document.getElementById("efUsername").value = endpoint?.auth?.username || "";
+  document.getElementById("efPassword").value = "";
+  document.getElementById("efAuthFields").classList.toggle("hidden", authMode !== "username_password");
+
+  document.getElementById("efSourceId").value = endpoint?.metadata?.source_id || "";
+  document.getElementById("efOwnerType").value = endpoint?.metadata?.owner_type || "";
+  document.getElementById("efOwnerId").value = endpoint?.metadata?.owner_id || "";
+  document.getElementById("efSourceSystemId").value = endpoint?.metadata?.source_system_id || "";
+  document.getElementById("efSiteId").value = endpoint?.metadata?.site_id || "";
+  document.getElementById("efAssetId").value = endpoint?.metadata?.asset_id || "";
+  document.getElementById("efWellId").value = endpoint?.metadata?.well_id || "";
+
+  const wrap = document.getElementById("endpointFormWrap");
+  wrap.classList.remove("hidden");
+  wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function hideEndpointForm() {
+  state.editingEndpointId = null;
+  state.editingEndpoint = null;
+  document.getElementById("endpointFormWrap").classList.add("hidden");
+}
+
+function collectEndpointFormData() {
+  const authMode = document.getElementById("efAuthMode").value;
+  const password = document.getElementById("efPassword").value;
+  const auth = { mode: authMode };
+  if (authMode === "username_password") {
+    auth.username = document.getElementById("efUsername").value || null;
+    auth.password = password || null;
+  }
+
+  const metadata = {
+    source_id: document.getElementById("efSourceId").value.trim(),
+    owner_type: document.getElementById("efOwnerType").value.trim(),
+    owner_id: document.getElementById("efOwnerId").value.trim(),
+  };
+  const sourceSystemId = document.getElementById("efSourceSystemId").value.trim();
+  const siteId = document.getElementById("efSiteId").value.trim();
+  const assetId = document.getElementById("efAssetId").value.trim();
+  const wellId = document.getElementById("efWellId").value.trim();
+  if (sourceSystemId) metadata.source_system_id = sourceSystemId;
+  if (siteId) metadata.site_id = siteId;
+  if (assetId) metadata.asset_id = assetId;
+  if (wellId) metadata.well_id = wellId;
+
+  const base = state.editingEndpoint ? clone(state.editingEndpoint) : {};
+  return {
+    ...base,
+    id: document.getElementById("efId").value.trim(),
+    url: document.getElementById("efUrl").value.trim(),
+    enabled: document.getElementById("efEnabled").checked,
+    auth,
+    metadata,
+  };
+}
+
+async function submitEndpointForm(event) {
+  event.preventDefault();
+  const submitBtn = document.getElementById("submitEndpointForm");
+  const data = collectEndpointFormData();
+
+  if (!data.id) {
+    setSourcesStatus("ID источника обязателен.", "error");
+    return;
+  }
+  if (!data.url) {
+    setSourcesStatus("URL источника обязателен.", "error");
+    return;
+  }
+  setBusyState(submitBtn, true);
+  try {
+    if (state.editingEndpointId) {
+      await fetchJson(`/api/config/endpoints/${encodeURIComponent(state.editingEndpointId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      setSourcesStatus(`Источник «${state.editingEndpointId}» обновлён.`, "success");
+    } else {
+      await fetchJson("/api/config/endpoints", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      setSourcesStatus(`Источник «${data.id}» создан.`, "success");
+    }
+    hideEndpointForm();
+    await loadSourcesPage();
+    await fetchSnapshot();
+  } catch (error) {
+    setSourcesStatus(`Ошибка сохранения: ${error.message}`, "error");
+  } finally {
+    setBusyState(submitBtn, false);
+  }
+}
+
+async function deleteEndpoint(endpointId, button) {
+  setBusyState(button, true);
+  try {
+    await fetchJson(`/api/config/endpoints/${encodeURIComponent(endpointId)}`, { method: "DELETE" });
+    setSourcesStatus(`Источник «${endpointId}» удалён.`, "success");
+    await loadSourcesPage();
+    await fetchSnapshot();
+  } catch (error) {
+    setSourcesStatus(`Ошибка удаления: ${error.message}`, "error");
+  } finally {
+    setBusyState(button, false);
+  }
+}
+
+document.getElementById("loadSourcesButton").addEventListener("click", () => {
+  const button = document.getElementById("loadSourcesButton");
+  withBusy(button, loadSourcesPage).catch((error) => setSourcesStatus(error.message, "error"));
+});
+document.getElementById("createEndpointButton").addEventListener("click", () => {
+  showEndpointForm(null);
+});
+document.getElementById("cancelEndpointForm").addEventListener("click", () => {
+  hideEndpointForm();
+});
+document.getElementById("endpointForm").addEventListener("submit", (event) => {
+  submitEndpointForm(event);
+});
+document.getElementById("efAuthMode").addEventListener("change", (event) => {
+  document.getElementById("efAuthFields").classList.toggle("hidden", event.target.value !== "username_password");
+});
 
 setInterval(() => {
   fetchSnapshot().catch(() => undefined);

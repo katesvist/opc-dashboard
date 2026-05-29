@@ -68,6 +68,9 @@ class OpcClientApi:
     async def put(self, path: str, body: dict[str, Any]) -> dict[str, Any] | list[Any] | str:
         return await asyncio.to_thread(self._request, "PUT", path, body, False)
 
+    async def delete(self, path: str) -> None:
+        await asyncio.to_thread(self._request, "DELETE", path, None, False)
+
     def _request(
         self,
         method: str,
@@ -401,6 +404,39 @@ async def replace_config_nodes(payload: dict[str, Any]) -> dict[str, Any] | list
         raise HTTPException(status_code=422, detail="nodes list is required")
     try:
         return await client_api.put("/config/nodes", {"nodes": nodes})
+    except HTTPException as exc:
+        raise HTTPException(status_code=exc.status_code, detail=_unwrap_detail(exc.detail)) from exc
+
+
+@app.get("/api/config/endpoints")
+async def config_endpoints() -> dict[str, Any]:
+    try:
+        response = await client_api.get("/config/endpoints")
+        return {"endpoints": response if isinstance(response, list) else []}
+    except HTTPException as exc:
+        raise HTTPException(status_code=exc.status_code, detail=_unwrap_detail(exc.detail)) from exc
+
+
+@app.post("/api/config/endpoints", status_code=201)
+async def create_endpoint(payload: dict[str, Any]) -> dict[str, Any] | list[Any] | str:
+    try:
+        return await client_api.post("/config/endpoints", payload)
+    except HTTPException as exc:
+        raise HTTPException(status_code=exc.status_code, detail=_unwrap_detail(exc.detail)) from exc
+
+
+@app.put("/api/config/endpoints/{endpoint_id}")
+async def update_endpoint(endpoint_id: str, payload: dict[str, Any]) -> dict[str, Any] | list[Any] | str:
+    try:
+        return await client_api.put(f"/config/endpoints/{endpoint_id}", payload)
+    except HTTPException as exc:
+        raise HTTPException(status_code=exc.status_code, detail=_unwrap_detail(exc.detail)) from exc
+
+
+@app.delete("/api/config/endpoints/{endpoint_id}", status_code=204)
+async def delete_endpoint(endpoint_id: str) -> None:
+    try:
+        await client_api.delete(f"/config/endpoints/{endpoint_id}")
     except HTTPException as exc:
         raise HTTPException(status_code=exc.status_code, detail=_unwrap_detail(exc.detail)) from exc
 

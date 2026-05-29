@@ -16,6 +16,7 @@
         <div class="topbar-actions">
           <button class="nav-button active" data-page-target="dashboard" type="button">Мониторинг</button>
           <button class="nav-button" data-page-target="config" type="button">Конфигурация</button>
+          <button class="nav-button" data-page-target="sources" type="button">Источники</button>
           <span id="readyBadge" class="badge badge-muted">checking</span>
           <span id="readyHint" class="muted">ready: -</span>
           <span id="updatedAt" class="muted">нет данных</span>
@@ -96,21 +97,8 @@
             Value для write
             <input id="apiValue" type="text" placeholder="например 12.5 или Z" />
           </label>
-          <label>
-            Depth
-            <input id="apiDepth" type="number" min="0" max="5" value="1" />
-          </label>
         </div>
         <pre id="apiResult" class="response-box">Выберите API-запрос.</pre>
-      </section>
-
-      <section class="panel page-section" data-page="dashboard">
-        <div class="panel-title">
-          <h2>Дерево Нод</h2>
-          <p>Использует общие поля <code>Endpoint</code>, <code>NodeId</code>, <code>Depth</code> и кнопку <code>Browse</code> из блока API клиента.</p>
-        </div>
-        <div id="browseTreeMeta" class="muted">Дерево еще не загружено.</div>
-        <div id="browseTree" class="tree-panel"></div>
       </section>
 
       <section class="panel page-section" data-page="dashboard">
@@ -122,17 +110,17 @@
           <input id="nodeFilter" class="filter" type="search" placeholder="Фильтр по коду, node id, endpoint..." />
         </div>
         <div class="table-wrap">
-          <table>
+          <table class="nodes-monitoring-table">
             <thead>
               <tr>
-                <th>Parameter</th>
-                <th>NodeId</th>
-                <th>Endpoint</th>
-                <th>Mode</th>
-                <th>Value</th>
-                <th>Quality</th>
-                <th>Source time</th>
-                <th>Status</th>
+                <th class="nt-status">Статус</th>
+                <th class="nt-param">Параметр</th>
+                <th class="nt-value">Значение</th>
+                <th class="nt-quality">Качество</th>
+                <th class="nt-time">Время данных</th>
+                <th class="nt-nodeid">Node ID</th>
+                <th class="nt-endpoint">Endpoint</th>
+                <th class="nt-mode">Режим</th>
               </tr>
             </thead>
             <tbody id="nodesTable"></tbody>
@@ -144,7 +132,7 @@
         <div class="panel-title inline-title config-hero">
           <div>
             <h2>Настройка привязки нод</h2>
-            <p>Загрузите текущую конфигурацию клиента и справочник параметров, выполните Browse, затем перетащите variable-ноду на нужный параметр.</p>
+            <p>Загрузите данные, выберите endpoint и загрузите дерево. Кликайте Variable-ноды или используйте Subscribe all — ноды появятся в рабочей области. Назначьте параметр из справочника.</p>
           </div>
           <div class="topbar-actions">
             <button id="loadConfigButton" class="btn" type="button">Обновить данные</button>
@@ -152,32 +140,9 @@
           </div>
         </div>
 
-        <div class="config-steps">
-          <article class="step-card">
-            <span class="step-number">1</span>
-            <div>
-              <strong>Данные для привязки</strong>
-              <p>Кнопка выше загружает текущие ноды клиента и справочник из сервиса параметров.</p>
-            </div>
-          </article>
-          <article class="step-card">
-            <span class="step-number">2</span>
-            <div>
-              <strong>Browse OPC UA</strong>
-              <p>Выберите endpoint, стартовый узел и глубину, чтобы получить дерево нод.</p>
-            </div>
-          </article>
-          <article class="step-card">
-            <span class="step-number">3</span>
-            <div>
-              <strong>Привязка</strong>
-              <p>Перетащите variable-ноду на карточку параметра или выберите ноду кликом и нажмите на параметр.</p>
-            </div>
-          </article>
-        </div>
-
         <section class="config-workbench">
           <div id="configStatus" class="config-status tone-info">Данные еще не загружены.</div>
+          <!--
           <div class="selection-bridge">
             <article id="selectedNodeCard" class="selection-card">
               <span class="selection-label">Выбранная нода</span>
@@ -193,20 +158,13 @@
               <div id="selectedParamMeta" class="selection-meta">Выберите параметр в справочнике справа.</div>
             </article>
           </div>
+          -->
         </section>
 
         <div class="config-toolbar">
           <label>
             Endpoint для Browse
             <select id="configEndpoint"></select>
-          </label>
-          <label>
-            Стартовый NodeId
-            <input id="configNodeId" type="text" placeholder="Пусто = Objects" />
-          </label>
-          <label>
-            Depth
-            <input id="configDepth" type="number" min="0" max="5" value="2" />
           </label>
           <button id="configBrowseButton" class="btn primary" type="button">Загрузить дерево</button>
         </div>
@@ -216,35 +174,155 @@
             <div class="column-title">
               <div>
                 <h3>OPC UA дерево</h3>
-                <p>Выбирайте узел кликом или перетаскивайте variable-ноду на параметр.</p>
               </div>
-              <span id="configBrowseMeta" class="muted">Нет browse-данных</span>
+              <span id="configBrowseMeta" class="muted">Нет данных</span>
+            </div>
+            <div class="config-tree-search">
+              <input id="configTreeSearch" type="search" placeholder="Поиск по имени..." />
             </div>
             <div id="configBrowseTree" class="tree-panel mapping-tree"></div>
           </section>
 
-          <section class="mapping-column">
+          <section class="mapping-column mapping-workspace-col">
             <div class="column-title">
               <div>
-                <h3>Справочник параметров</h3>
-                <p>Параметр можно выбрать кликом или использовать как цель для перетаскивания ноды.</p>
+                <h3>Рабочая область</h3>
               </div>
-              <span id="dictMeta" class="muted">0 параметров</span>
+              <div class="mapping-table-meta">
+                <input id="mappingFilter" type="search" placeholder="Фильтр..." class="mapping-filter" />
+                <span id="mappingMeta" class="muted">0 нод</span>
+              </div>
             </div>
-            <div class="dictionary-tools">
-              <input id="dictFilter" type="search" placeholder="Фильтр: код, описание, тип, единица..." />
+            <div class="mapping-table-wrap">
+              <table class="ua-nodes-table">
+                <thead>
+                  <tr>
+                    <th class="col-num">#</th>
+                    <th class="col-nodeid-h">Node ID</th>
+                    <th class="col-param-h">Параметр</th>
+                    <th class="col-mode-h">Mode</th>
+                    <th class="col-type-h">Type</th>
+                    <th class="col-del"></th>
+                  </tr>
+                </thead>
+                <tbody id="mappingList"></tbody>
+              </table>
             </div>
-            <div id="dictionaryList" class="dictionary-list"></div>
           </section>
-        </div>
 
-        <section class="mapping-column mapping-current">
-          <div class="column-title">
-            <h3>Текущие привязки клиента</h3>
-            <span id="mappingMeta" class="muted">0 нод</span>
+        </div>
+      </section>
+
+      <div id="dictModalOverlay" class="dict-modal-overlay hidden">
+        <div class="dict-modal">
+          <div class="dict-modal-header">
+            <span class="dict-modal-title">Справочник параметров</span>
+            <span id="dictMeta" class="muted"></span>
+            <button type="button" id="dictModalClose" class="ua-del-btn" title="Закрыть">×</button>
           </div>
-          <div id="mappingList" class="mapping-list"></div>
-        </section>
+          <div class="dict-modal-search">
+            <input id="dictFilter" type="search" placeholder="Фильтр: код, описание, тип..." />
+          </div>
+          <div id="dictionaryList" class="dictionary-list dict-modal-list"></div>
+        </div>
+      </div>
+      <section class="panel page-section hidden" data-page="sources">
+        <div class="panel-title inline-title config-hero">
+          <div>
+            <h2>Источники данных OPC UA</h2>
+            <p>Управление подключениями к OPC UA серверам. Изменения сохраняются в конфигурационный файл клиента.</p>
+          </div>
+          <div class="topbar-actions">
+            <button id="loadSourcesButton" class="btn" type="button">Обновить</button>
+            <button id="createEndpointButton" class="btn primary" type="button">+ Добавить источник</button>
+          </div>
+        </div>
+        <div id="sourcesStatus" class="config-status tone-info hidden"></div>
+        <div id="endpointFormWrap" class="endpoint-form-wrap hidden">
+          <form id="endpointForm" class="endpoint-form" novalidate>
+            <div class="endpoint-form-title">
+              <h3 id="endpointFormTitle">Новый источник</h3>
+              <button type="button" id="cancelEndpointForm" class="btn">Отмена</button>
+            </div>
+            <div class="endpoint-form-fields">
+              <label>
+                ID
+                <input id="efId" type="text" placeholder="server-1" />
+                <small>Уникальный ID, напр. rig-01</small>
+              </label>
+              <label>
+                URL
+                <input id="efUrl" type="text" placeholder="opc.tcp://192.168.1.100:4840" />
+                <small>opc.tcp://&lt;IP&gt;:4840 — стандартный порт 4840</small>
+              </label>
+              <label class="label-checkbox">
+                <input id="efEnabled" type="checkbox" checked />
+                Включен
+              </label>
+              <label>
+                Аутентификация
+                <select id="efAuthMode">
+                  <option value="anonymous">Anonymous</option>
+                  <option value="username_password">Пользователь / пароль</option>
+                </select>
+              </label>
+              <div id="efAuthFields" class="hidden ef-auth-subfields">
+                <label>
+                  Имя пользователя
+                  <input id="efUsername" type="text" />
+                </label>
+                <label>
+                  Пароль
+                  <input id="efPassword" type="password" placeholder="Оставьте пустым, чтобы не менять" />
+                </label>
+              </div>
+              <details class="endpoint-form-section">
+                <summary>Метаданные</summary>
+                <div class="endpoint-form-fields ef-meta-fields">
+                  <label>
+                    <span>Source ID</span>
+                    <input id="efSourceId" type="text" placeholder="rig-01" />
+                    <small>ID источника в платформе</small>
+                  </label>
+                  <label>
+                    <span>Owner type</span>
+                    <input id="efOwnerType" type="text" placeholder="rig" />
+                    <small>rig / well / pad / platform</small>
+                  </label>
+                  <label>
+                    <span>Owner ID</span>
+                    <input id="efOwnerId" type="text" placeholder="rig-01" />
+                    <small>ID объекта, напр. rig-01</small>
+                  </label>
+                  <label>
+                    Source system ID
+                    <input id="efSourceSystemId" type="text" placeholder="scada-main" />
+                    <small>Имя SCADA-системы</small>
+                  </label>
+                  <label>
+                    Site ID
+                    <input id="efSiteId" type="text" placeholder="pad-a" />
+                    <small>Куст / площадка</small>
+                  </label>
+                  <label>
+                    Asset ID
+                    <input id="efAssetId" type="text" placeholder="pump-01" />
+                    <small>Агрегат, напр. pump-01</small>
+                  </label>
+                  <label>
+                    Well ID
+                    <input id="efWellId" type="text" placeholder="well-007" />
+                    <small>ID скважины</small>
+                  </label>
+                </div>
+              </details>
+            </div>
+            <div class="endpoint-form-actions">
+              <button type="submit" id="submitEndpointForm" class="btn primary">Сохранить</button>
+            </div>
+          </form>
+        </div>
+        <div id="endpointsList" class="endpoints-list"></div>
       </section>
     </main>
     <script src="/assets/app.js" defer></script>

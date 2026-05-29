@@ -1,6 +1,6 @@
 # OPC UA Client Dashboard
 
-Изолированный read-only визуальный стенд для `opc-ua-client-service`.
+Изолированный визуальный стенд для `opc-ua-client-service`.
 
 Стенд не является частью backend-клиента и может жить в отдельном репозитории. Он связан с клиентом через HTTP API:
 
@@ -17,21 +17,15 @@
 
 ## Быстрый запуск рядом с Docker-клиентом
 
-Сначала подними сам OPC UA client из его репозитория:
+Сначала поднять сам OPC UA client из его репозитория
+Затем dashboard из этой папки:
 
 ```powershell
-cd C:\Users\e.kanarskaya\Desktop\opc-ua-client-service-dev
-docker compose -f .\docker-compose.server.yml up --build -d
-```
-
-Затем подними dashboard из этой папки:
-
-```powershell
-cd C:\Users\e.kanarskaya\Desktop\opc-ua-client-dashboard
+cd ~\opc-ua-client-dashboard
 docker compose up --build -d
 ```
 
-Открой:
+Открыть:
 
 ```text
 http://127.0.0.1:8090
