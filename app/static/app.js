@@ -1469,7 +1469,7 @@ function showEndpointForm(endpoint = null) {
   document.getElementById("efAuthMode").value = authMode;
   document.getElementById("efUsername").value = endpoint?.auth?.username || "";
   document.getElementById("efPassword").value = "";
-  document.getElementById("efAuthFields").style.display = authMode === "username_password" ? "block" : "none";
+  document.getElementById("efAuthFields").classList.toggle("hidden", authMode !== "username_password");
 
   document.getElementById("efSourceId").value = endpoint?.metadata?.source_id || "";
   document.getElementById("efOwnerType").value = endpoint?.metadata?.owner_type || "";
@@ -1489,6 +1489,7 @@ function hideEndpointForm() {
   state.editingEndpoint = null;
   document.getElementById("endpointFormWrap").classList.add("hidden");
   document.getElementById("endpointForm").reset();
+  document.getElementById("efAuthFields").classList.add("hidden");
 }
 
 function collectEndpointFormData() {
@@ -1594,7 +1595,7 @@ document.getElementById("endpointForm").addEventListener("submit", (event) => {
   submitEndpointForm(event);
 });
 document.getElementById("efAuthMode").addEventListener("change", (event) => {
-  document.getElementById("efAuthFields").style.display = event.target.value === "username_password" ? "block" : "none";
+  document.getElementById("efAuthFields").classList.toggle("hidden", event.target.value !== "username_password");
 });
 
 setInterval(() => {
