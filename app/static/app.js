@@ -6,6 +6,7 @@ const state = {
   configTreeFilter: "",
   configBrowseItems: [],
   configBrowseExpanded: new Set(),
+  configBrowseLoadedNodes: new Set(),
   dictionary: [],
   configNodes: [],
   draftNodes: [],
@@ -219,7 +220,7 @@ function buildOperationPayload(operation) {
     endpoint_id: endpointId,
     node_id: nodeId,
     value: rawValue ? parseApiValue(rawValue) : null,
-    max_depth: 10,
+    max_depth: 2,
     include_variables: true,
     include_objects: true,
   };
@@ -449,21 +450,51 @@ async function browseForConfig() {
   setConfigStatus("Загружаю дерево OPC UA...", "info");
   const params = new URLSearchParams({
     endpoint_id: endpointId,
-    max_depth: "5",
+    max_depth: "1",
     include_variables: "true",
     include_objects: "true",
   });
   const response = await fetchJson(`/api/browse?${params.toString()}`);
   state.configBrowseItems = Array.isArray(response.items) ? response.items : [];
+  state.configBrowseExpanded = new Set();
+  state.configBrowseLoadedNodes = new Set();
+
+  // Mark nodes whose children are already present in the response
+  for (const item of state.configBrowseItems) {
+    if (item.parent_node_id) state.configBrowseLoadedNodes.add(item.parent_node_id);
+  }
+  // Auto-expand only top-level nodes so user sees the first real layer
   state.configBrowseExpanded = new Set(
     state.configBrowseItems
-      .filter((item) => item.has_children && Number(item.depth ?? 0) < 2)
+      .filter((item) => item.has_children && Number(item.depth ?? 0) < 1)
       .map((item) => item.node_id),
   );
+
   const variableCount = state.configBrowseItems.filter((item) => item.node_class === "Variable").length;
   setText("configBrowseMeta", `${state.configBrowseItems.length} узлов · ${variableCount} variable`);
-  setConfigStatus(`Дерево загружено: ${state.configBrowseItems.length} узлов, из них ${variableCount} variable.`, "success");
+  setConfigStatus(`Верхний уровень загружен: ${state.configBrowseItems.length} узлов. Раскрывайте ветки по мере необходимости.`, "success");
   renderConfigBrowseTree();
+}
+
+async function loadConfigNodeChildren(nodeId) {
+  const endpointId = document.getElementById("configEndpoint").value;
+  if (!endpointId) return;
+  const params = new URLSearchParams({
+    endpoint_id: endpointId,
+    node_id: nodeId,
+    max_depth: "1",
+    include_variables: "true",
+    include_objects: "true",
+  });
+  const response = await fetchJson(`/api/browse?${params.toString()}`);
+  const newItems = Array.isArray(response.items) ? response.items : [];
+  const children = newItems.filter((i) => i.parent_node_id === nodeId);
+  for (const child of children) {
+    if (!state.configBrowseItems.some((i) => i.node_id === child.node_id)) {
+      state.configBrowseItems.push(child);
+    }
+  }
+  state.configBrowseLoadedNodes.add(nodeId);
 }
 
 function getTreeVisibleIds(items, query) {
@@ -524,8 +555,9 @@ function renderConfigBrowseTree() {
     return nodes
       .map((item) => {
         const children = byParent.get(item.node_id) || [];
-        const expandable = children.length > 0;
-        const expanded = visibleIds ? expandable : state.configBrowseExpanded.has(item.node_id);
+        const isLoaded = state.configBrowseLoadedNodes.has(item.node_id) || byParent.has(item.node_id);
+        const expandable = isLoaded ? children.length > 0 : Boolean(item.has_children);
+        const expanded = visibleIds ? (children.length > 0) : state.configBrowseExpanded.has(item.node_id);
         const isVariable = item.node_class === "Variable";
         const isObject = item.node_class === "Object";
         const inWorkspace = wsNodeIds.has(item.node_id);
@@ -571,13 +603,30 @@ function renderConfigBrowseTree() {
   root.innerHTML = emptyMsg || `<div class="tree-list">${renderBranch("__root__", 0)}</div>`;
 
   for (const button of root.querySelectorAll("[data-config-toggle]")) {
-    button.addEventListener("click", (event) => {
+    button.addEventListener("click", async (event) => {
       const nodeId = event.currentTarget.dataset.configToggle;
       if (state.configBrowseExpanded.has(nodeId)) {
         state.configBrowseExpanded.delete(nodeId);
-      } else {
-        state.configBrowseExpanded.add(nodeId);
+        renderConfigBrowseTree();
+        return;
       }
+      const alreadyLoaded =
+        state.configBrowseLoadedNodes.has(nodeId) ||
+        state.configBrowseItems.some((i) => i.parent_node_id === nodeId);
+      if (!alreadyLoaded) {
+        const btn = event.currentTarget;
+        btn.textContent = "…";
+        btn.disabled = true;
+        try {
+          await loadConfigNodeChildren(nodeId);
+        } catch (e) {
+          btn.textContent = "+";
+          btn.disabled = false;
+          setConfigStatus(`Не удалось загрузить узлы: ${e.message}`, "error");
+          return;
+        }
+      }
+      state.configBrowseExpanded.add(nodeId);
       renderConfigBrowseTree();
     });
   }
@@ -1302,7 +1351,6 @@ Promise.all([loadOperations(), fetchSnapshot()]).catch((error) => {
   setText("updatedAt", error.message);
 });
 
-renderBrowseTree();
 renderConfigBrowseTree();
 renderSelectionBridge();
 
@@ -1412,7 +1460,7 @@ function showEndpointForm(endpoint = null) {
 
   const efId = document.getElementById("efId");
   efId.value = endpoint?.id || "";
-  efId.disabled = Boolean(endpoint);
+  efId.disabled = false;
 
   document.getElementById("efUrl").value = endpoint?.url || "";
   document.getElementById("efEnabled").checked = endpoint ? endpoint.enabled !== false : true;
@@ -1421,7 +1469,7 @@ function showEndpointForm(endpoint = null) {
   document.getElementById("efAuthMode").value = authMode;
   document.getElementById("efUsername").value = endpoint?.auth?.username || "";
   document.getElementById("efPassword").value = "";
-  document.getElementById("efAuthFields").classList.toggle("hidden", authMode !== "username_password");
+  document.getElementById("efAuthFields").style.display = authMode === "username_password" ? "block" : "none";
 
   document.getElementById("efSourceId").value = endpoint?.metadata?.source_id || "";
   document.getElementById("efOwnerType").value = endpoint?.metadata?.owner_type || "";
@@ -1440,6 +1488,7 @@ function hideEndpointForm() {
   state.editingEndpointId = null;
   state.editingEndpoint = null;
   document.getElementById("endpointFormWrap").classList.add("hidden");
+  document.getElementById("endpointForm").reset();
 }
 
 function collectEndpointFormData() {
@@ -1491,24 +1540,35 @@ async function submitEndpointForm(event) {
   }
   setBusyState(submitBtn, true);
   try {
+    let statusMessage;
     if (state.editingEndpointId) {
-      await fetchJson(`/api/config/endpoints/${encodeURIComponent(state.editingEndpointId)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      setSourcesStatus(`Источник «${state.editingEndpointId}» обновлён.`, "success");
+      if (data.id !== state.editingEndpointId) {
+        await fetchJson(`/api/config/endpoints/${encodeURIComponent(state.editingEndpointId)}`, { method: "DELETE" });
+        await fetchJson("/api/config/endpoints", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        });
+        statusMessage = `Источник переименован: «${state.editingEndpointId}» → «${data.id}».`;
+      } else {
+        await fetchJson(`/api/config/endpoints/${encodeURIComponent(state.editingEndpointId)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        });
+        statusMessage = `Источник «${data.id}» обновлён.`;
+      }
     } else {
       await fetchJson("/api/config/endpoints", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
       });
-      setSourcesStatus(`Источник «${data.id}» создан.`, "success");
+      statusMessage = `Источник «${data.id}» создан.`;
     }
     hideEndpointForm();
     await loadSourcesPage();
-    await fetchSnapshot();
+    setSourcesStatus(statusMessage, "success");
   } catch (error) {
     setSourcesStatus(`Ошибка сохранения: ${error.message}`, "error");
   } finally {
@@ -1544,7 +1604,7 @@ document.getElementById("endpointForm").addEventListener("submit", (event) => {
   submitEndpointForm(event);
 });
 document.getElementById("efAuthMode").addEventListener("change", (event) => {
-  document.getElementById("efAuthFields").classList.toggle("hidden", event.target.value !== "username_password");
+  document.getElementById("efAuthFields").style.display = event.target.value === "username_password" ? "block" : "none";
 });
 
 setInterval(() => {
