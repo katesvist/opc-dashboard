@@ -1460,7 +1460,7 @@ function showEndpointForm(endpoint = null) {
 
   const efId = document.getElementById("efId");
   efId.value = endpoint?.id || "";
-  efId.disabled = false;
+  efId.disabled = Boolean(endpoint);
 
   document.getElementById("efUrl").value = endpoint?.url || "";
   document.getElementById("efEnabled").checked = endpoint ? endpoint.enabled !== false : true;
@@ -1542,22 +1542,12 @@ async function submitEndpointForm(event) {
   try {
     let statusMessage;
     if (state.editingEndpointId) {
-      if (data.id !== state.editingEndpointId) {
-        await fetchJson(`/api/config/endpoints/${encodeURIComponent(state.editingEndpointId)}`, { method: "DELETE" });
-        await fetchJson("/api/config/endpoints", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        });
-        statusMessage = `Источник переименован: «${state.editingEndpointId}» → «${data.id}».`;
-      } else {
-        await fetchJson(`/api/config/endpoints/${encodeURIComponent(state.editingEndpointId)}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        });
-        statusMessage = `Источник «${data.id}» обновлён.`;
-      }
+      await fetchJson(`/api/config/endpoints/${encodeURIComponent(state.editingEndpointId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      statusMessage = `Источник «${state.editingEndpointId}» обновлён.`;
     } else {
       await fetchJson("/api/config/endpoints", {
         method: "POST",
