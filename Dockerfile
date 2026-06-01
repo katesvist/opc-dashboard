@@ -2,14 +2,17 @@ ARG BASE_IMAGE=python:3.12-slim
 FROM ${BASE_IMAGE}
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10
 
 WORKDIR /dashboard
 
-COPY pyproject.toml README.md /dashboard/
-COPY app /dashboard/app
+COPY requirements.txt /dashboard/
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --prefer-binary -r requirements.txt
+
+COPY app /dashboard/app
 
 EXPOSE 8090
 
