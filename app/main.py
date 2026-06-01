@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -198,6 +198,18 @@ class RabbitMqApi:
                 "queue": self.settings.rabbitmq_queue,
                 "error": f"RabbitMQ management is unavailable: {exc.reason}",
             }
+        except (TimeoutError, socket.timeout, OSError) as exc:
+            return {
+                "available": False,
+                "queue": self.settings.rabbitmq_queue,
+                "error": f"RabbitMQ management is temporarily unavailable: {exc}",
+            }
+        except (json.JSONDecodeError, ValueError) as exc:
+            return {
+                "available": False,
+                "queue": self.settings.rabbitmq_queue,
+                "error": f"RabbitMQ management returned invalid response: {exc}",
+            }
 
     def _basic_token(self) -> str:
         raw = f"{self.settings.rabbitmq_user}:{self.settings.rabbitmq_password}".encode("utf-8")
@@ -313,7 +325,18 @@ app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
 
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.middleware("http")
+async def add_static_cache_headers(request, call_next) -> Response:
+    response = await call_next(request)
+    if request.url.path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/api/snapshot")
@@ -362,6 +385,8 @@ async def _safe_client_get(path: str, fallback: Any) -> Any:
         return await client_api.get(path, tolerate_error=True)
     except HTTPException as exc:
         return {"error": exc.detail, "available": False} if isinstance(fallback, dict) else fallback
+    except Exception as exc:
+        return {"error": str(exc), "available": False} if isinstance(fallback, dict) else fallback
 
 
 @app.get("/api/operations")
@@ -582,6 +607,8 @@ async def _build_nodes_snapshot(subscriptions: list[Any]) -> list[dict[str, Any]
                 read_result = response if isinstance(response, dict) else None
             except HTTPException as exc:
                 read_error = str(exc.detail)
+            except Exception as exc:
+                read_error = str(exc)
         return {
             "endpoint_id": item.get("endpoint_id"),
             "node_id": item.get("node_id"),
