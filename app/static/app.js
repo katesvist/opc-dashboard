@@ -19,6 +19,8 @@ const state = {
   activePage: "dashboard",
 };
 
+const GROUP_SUBSCRIBE_MAX_DEPTH = "2";
+
 const formatDate = (value) => {
   if (!value) return "-";
   const date = new Date(value);
@@ -52,6 +54,28 @@ const pretty = (value) => {
 const clone = (value) => {
   if (typeof structuredClone === "function") return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
+};
+
+const nodeKey = (endpointId, nodeId) => `${endpointId || ""}\u0000${nodeId || ""}`;
+
+const buildByParent = (items) => {
+  const byParent = new Map();
+  for (const item of items) {
+    const key = item.parent_node_id ?? "__root__";
+    const bucket = byParent.get(key) || [];
+    bucket.push(item);
+    byParent.set(key, bucket);
+  }
+  return byParent;
+};
+
+const buildDictByName = () => {
+  const result = new Map();
+  for (const param of state.dictionary) {
+    if (param.name) result.set(param.name, param);
+    if (param.description) result.set(param.description, param);
+  }
+  return result;
 };
 
 function setConfigStatus(message, tone = "info") {
@@ -489,9 +513,11 @@ async function loadConfigNodeChildren(nodeId) {
   const response = await fetchJson(`/api/browse?${params.toString()}`);
   const newItems = Array.isArray(response.items) ? response.items : [];
   const children = newItems.filter((i) => i.parent_node_id === nodeId);
+  const existingIds = new Set(state.configBrowseItems.map((i) => i.node_id));
   for (const child of children) {
-    if (!state.configBrowseItems.some((i) => i.node_id === child.node_id)) {
+    if (!existingIds.has(child.node_id)) {
       state.configBrowseItems.push(child);
+      existingIds.add(child.node_id);
     }
   }
   state.configBrowseLoadedNodes.add(nodeId);
@@ -525,13 +551,7 @@ function renderConfigBrowseTree() {
     return;
   }
 
-  const byParent = new Map();
-  for (const item of items) {
-    const key = item.parent_node_id ?? "__root__";
-    const bucket = byParent.get(key) || [];
-    bucket.push(item);
-    byParent.set(key, bucket);
-  }
+  const byParent = buildByParent(items);
 
   const endpointId = document.getElementById("configEndpoint").value || "";
   const treeFilter = state.configTreeFilter.trim();
@@ -540,6 +560,7 @@ function renderConfigBrowseTree() {
     : { visible: null, matching: null };
 
   const wsNodeIds = new Set(state.draftNodes.filter((n) => n.endpoint_id === endpointId).map((n) => n.node_id));
+  const persistedNodeKeys = new Set(state.configNodes.map((n) => nodeKey(n.endpoint_id, n.node_id)));
   // Direct-parent marking: only the immediate parent of a workspace node gets the green indicator,
   // not all transitive ancestors (prevents Objects/Server from being incorrectly highlighted)
   const wsParentIds = new Set();
@@ -562,7 +583,7 @@ function renderConfigBrowseTree() {
         const isObject = item.node_class === "Object";
         const inWorkspace = wsNodeIds.has(item.node_id);
         const parentInWs = wsParentIds.has(item.node_id);
-        const mapped = hasPersistedMappingForBrowseNode(endpointId, item.node_id);
+        const mapped = persistedNodeKeys.has(nodeKey(endpointId, item.node_id));
         const rawLabel = item.display_name || item.browse_name || item.node_id;
         const isMatch = matchingIds?.has(item.node_id);
         const label = isMatch
@@ -640,6 +661,9 @@ function renderConfigBrowseTree() {
       const alreadyAdded = state.draftNodes.some((n) => n.endpoint_id === endpointId && n.node_id === clickedNode.node_id);
       if (!alreadyAdded) {
         addBrowseNodeToDraft(clickedNode);
+        renderMappings();
+        renderConfigBrowseTree();
+        setConfigStatus("Нода добавлена в рабочую область. Назначьте параметр и сохраните конфигурацию.", "warn");
       } else {
         setConfigStatus("Нода уже в рабочей области.", "info");
       }
@@ -663,7 +687,7 @@ function renderConfigBrowseTree() {
 }
 
 
-function addBrowseNodeToDraft(browseNode, param, groupData) {
+function addBrowseNodeToDraft(browseNode, param, groupData, options = {}) {
   const endpointId = browseNode.endpoint_id;
   const nodeId = makeNodeConfigId(endpointId, param?.name || browseNode.browse_name || browseNode.node_id);
   state.draftNodes.push({
@@ -695,23 +719,28 @@ function addBrowseNodeToDraft(browseNode, param, groupData) {
     },
     tags: [],
   });
-  updatePendingConfigChanges();
+  if (!options.deferUpdate) updatePendingConfigChanges();
 }
 
-function addGroupFromItems(parentNodeId, groupPath, groupData, allItems, endpointId) {
-  const children = allItems.filter((item) => item.parent_node_id === parentNodeId);
+function addGroupFromItems(parentNodeId, groupPath, groupData, allItems, endpointId, context = null) {
+  const ctx = context || {
+    byParent: buildByParent(allItems),
+    dictByName: buildDictByName(),
+    existingNodeKeys: new Set(state.draftNodes.map((n) => nodeKey(n.endpoint_id, n.node_id))),
+  };
+  const children = ctx.byParent.get(parentNodeId) || [];
   for (const child of children) {
     if (child.node_class === "Variable") {
       // Add the variable itself to the current group
-      if (!state.draftNodes.some((n) => n.endpoint_id === endpointId && n.node_id === child.node_id)) {
-        const param = state.dictionary.find(
-          (p) => p.name === child.browse_name || p.name === child.display_name,
-        ) || null;
-        addBrowseNodeToDraft({ ...child, endpoint_id: endpointId }, param, groupData);
+      const key = nodeKey(endpointId, child.node_id);
+      if (!ctx.existingNodeKeys.has(key)) {
+        const param = ctx.dictByName.get(child.browse_name) || ctx.dictByName.get(child.display_name) || null;
+        addBrowseNodeToDraft({ ...child, endpoint_id: endpointId }, param, groupData, { deferUpdate: true });
+        ctx.existingNodeKeys.add(key);
       }
       // If this variable has sub-variables (e.g. BuildInfo → ProductUri, SoftwareVersion…),
       // recurse into them as a child sub-group, preserving hierarchy
-      const subChildren = allItems.filter((it) => it.parent_node_id === child.node_id);
+      const subChildren = ctx.byParent.get(child.node_id) || [];
       if (subChildren.length > 0) {
         const subName = child.browse_name || child.display_name || child.node_id;
         const subPath = [...groupPath, subName];
@@ -719,7 +748,7 @@ function addGroupFromItems(parentNodeId, groupPath, groupData, allItems, endpoin
           group_id: makeNodeConfigId(endpointId, subPath.join("/")),
           group_path: subPath,
           group_display_name: child.display_name || child.browse_name || child.node_id,
-        }, allItems, endpointId);
+        }, allItems, endpointId, ctx);
       }
     } else if (child.node_class === "Object") {
       const subName = child.browse_name || child.display_name || child.node_id;
@@ -728,7 +757,7 @@ function addGroupFromItems(parentNodeId, groupPath, groupData, allItems, endpoin
         group_id: makeNodeConfigId(endpointId, subPath.join("/")),
         group_path: subPath,
         group_display_name: child.display_name || child.browse_name || child.node_id,
-      }, allItems, endpointId);
+      }, allItems, endpointId, ctx);
     }
   }
 }
@@ -740,7 +769,7 @@ async function groupSubscribeObject(parentNode, button) {
     const params = new URLSearchParams({
       endpoint_id: endpointId,
       node_id: parentNode.node_id,
-      max_depth: "5",
+      max_depth: GROUP_SUBSCRIBE_MAX_DEPTH,
       include_variables: "true",
       include_objects: "true",
     });
@@ -759,6 +788,7 @@ async function groupSubscribeObject(parentNode, button) {
     };
     const beforeCount = state.draftNodes.length;
     addGroupFromItems(parentNode.node_id, groupPath, groupData, allItems, endpointId);
+    updatePendingConfigChanges();
     const addedCount = state.draftNodes.length - beforeCount;
     const totalVars = allItems.filter((item) => item.node_class === "Variable").length;
     const skipped = totalVars - addedCount;
@@ -768,7 +798,7 @@ async function groupSubscribeObject(parentNode, button) {
     if (unbound > 0) parts.push(`${unbound} без параметра — назначьте вручную`);
     if (skipped > 0) parts.push(`${skipped} уже в рабочей области`);
     setConfigStatus(
-      `«${groupData.group_display_name}»: ${parts.length ? parts.join(", ") : "нет новых нод"}.`,
+      `«${groupData.group_display_name}»: ${parts.length ? parts.join(", ") : "нет новых нод"} (глубина ${GROUP_SUBSCRIBE_MAX_DEPTH}).`,
       unbound > 0 ? "warn" : "success",
     );
     renderMappings();
@@ -997,6 +1027,7 @@ function renderMappings() {
   const filterEl = document.getElementById("mappingFilter");
   const filterText = filterEl ? filterEl.value.toLowerCase() : "";
   const dictCodes = new Set(state.dictionary.map((p) => p.name));
+  const savedById = new Map(state.configNodes.map((item) => [item.id, item]));
   const currentEndpoint = document.getElementById("configEndpoint")?.value || "";
   const endpointNodes = currentEndpoint
     ? state.draftNodes.filter((n) => n.endpoint_id === currentEndpoint)
@@ -1020,7 +1051,7 @@ function renderMappings() {
     : endpointNodes;
 
   const makeNodeRow = (node, rowIdx, depth = 0) => {
-    const savedNode = state.configNodes.find((item) => item.id === node.id);
+    const savedNode = savedById.get(node.id);
     const isNew = !savedNode;
     const isChanged = savedNode && JSON.stringify(node) !== JSON.stringify(savedNode);
     const hasParam = node.parameter_code && dictCodes.has(node.parameter_code);
