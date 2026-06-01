@@ -4,6 +4,7 @@ services:
       context: .
       args:
         BASE_IMAGE: ${DASHBOARD_BASE_IMAGE:-python:3.12-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
     restart: unless-stopped
     environment:
       OPC_CLIENT_BASE_URL: ${OPC_CLIENT_BASE_URL:-http://host.docker.internal:8080}
