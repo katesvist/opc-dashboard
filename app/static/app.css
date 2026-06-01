@@ -889,14 +889,14 @@ tbody tr:hover {
 }
 
 .mapping-filter {
-  width: 110px;
+  width: 145px;
   height: 26px;
   font-size: 11px;
 }
 
 .mapping-table-wrap {
   max-height: 720px;
-  overflow-x: hidden;
+  overflow-x: auto;
   overflow-y: auto;
   border: 0;
   border-radius: 0;
@@ -932,6 +932,7 @@ tbody tr:hover {
 }
 
 .ua-row td {
+  height: 40px;
   padding: 5px 8px;
   border-bottom: 1px solid var(--line);
   vertical-align: middle;
@@ -965,7 +966,9 @@ tbody tr:hover {
   width: 36px;
   color: var(--muted);
   text-align: right;
-  padding-right: 10px !important;
+  padding-left: 8px !important;
+  padding-right: 14px !important;
+  font-variant-numeric: tabular-nums;
 }
 
 .col-param {
@@ -975,6 +978,7 @@ tbody tr:hover {
 .ua-param-code {
   display: block;
   font-weight: 600;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -984,6 +988,7 @@ tbody tr:hover {
   display: block;
   font-size: 11px;
   color: var(--muted);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -991,6 +996,38 @@ tbody tr:hover {
 
 .col-nodeid {
   overflow: hidden;
+  padding-left: 0 !important;
+}
+
+.ua-node-cell {
+  position: relative;
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  padding-left: 8px;
+}
+
+.ua-node-cell.depth-1 { padding-left: 18px; }
+.ua-node-cell.depth-2 { padding-left: 32px; }
+.ua-node-cell.depth-3 { padding-left: 46px; }
+.ua-node-cell.depth-4 { padding-left: 60px; }
+.ua-node-cell.depth-5 { padding-left: 74px; }
+.ua-node-cell.depth-6 { padding-left: 88px; }
+
+.ua-node-cell.depth-1::before,
+.ua-node-cell.depth-2::before,
+.ua-node-cell.depth-3::before,
+.ua-node-cell.depth-4::before,
+.ua-node-cell.depth-5::before,
+.ua-node-cell.depth-6::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 8px;
+  width: 2px;
+  border-radius: 2px;
+  background: #c7d3df;
 }
 
 .col-nodeid code {
@@ -1090,6 +1127,7 @@ tbody tr:hover {
 
 .col-param-cell {
   min-width: 100px;
+  overflow: hidden;
 }
 
 .assign-hint {
@@ -1098,16 +1136,49 @@ tbody tr:hover {
   font-style: italic;
 }
 
-.ua-assign-btn {
+.ua-param-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ua-param-text {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ua-param-wrap.param-missing .ua-param-code {
+  color: var(--warn);
+}
+
+.ua-param-wrap.param-missing .ua-param-name {
+  color: var(--warn);
+}
+
+.ua-assign-btn,
+.ua-reassign-btn {
   padding: 2px 7px;
   height: 22px;
   font-size: 11px;
   border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ua-assign-btn {
   border: 1px solid var(--warn);
   color: var(--warn);
   background: #fffbf0;
-  cursor: pointer;
-  white-space: nowrap;
+}
+
+.ua-reassign-btn {
+  flex-shrink: 0;
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+  background: var(--panel);
 }
 
 .ua-assign-btn:hover {
@@ -1115,8 +1186,17 @@ tbody tr:hover {
   color: #fff;
 }
 
+.ua-reassign-btn:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: #eef6fb;
+}
+
 /* Group subscribe button — compact */
 .group-subscribe-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   flex-shrink: 0;
   padding: 1px 5px;
   min-height: 16px;
@@ -1128,6 +1208,38 @@ tbody tr:hover {
   border: 1px solid #cfe0ea;
   cursor: pointer;
   line-height: 1.4;
+}
+
+.group-subscribe-icon {
+  position: relative;
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  color: currentColor;
+}
+
+.group-subscribe-icon::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 1px;
+  width: 6px;
+  height: 6px;
+  border-left: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  border-radius: 0 0 0 2px;
+}
+
+.group-subscribe-icon::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 1px;
+  width: 4px;
+  height: 4px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
 }
 
 .group-subscribe-btn:hover {
@@ -1463,7 +1575,20 @@ tbody tr:hover {
   border-top: 2px solid var(--line);
 }
 
+.ua-group-toggle-cell {
+  width: 36px;
+  padding: 0 8px !important;
+  text-align: right;
+  background: var(--panel-soft);
+  border-top: 2px solid var(--line);
+}
+
 .ua-group-sub .ua-group-cell {
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+
+.ua-group-sub .ua-group-toggle-cell {
   background: var(--bg);
   border-top: 1px solid var(--line);
 }
@@ -1472,14 +1597,44 @@ tbody tr:hover {
   border-top: 0;
 }
 
+.ua-group-header:first-child .ua-group-toggle-cell {
+  border-top: 0;
+}
+
 /* Flex layout lives on the inner div, not the td — avoids browser quirks with td flex */
 .ua-group-inner {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px;
+  min-height: 31px;
+  padding: 5px 10px 5px 0;
   width: 100%;
   box-sizing: border-box;
+}
+
+.ua-group-inner.depth-0 { padding-left: 0; }
+.ua-group-inner.depth-1 { padding-left: 14px; }
+.ua-group-inner.depth-2 { padding-left: 28px; }
+.ua-group-inner.depth-3 { padding-left: 42px; }
+.ua-group-inner.depth-4 { padding-left: 56px; }
+.ua-group-inner.depth-5 { padding-left: 70px; }
+.ua-group-inner.depth-6 { padding-left: 84px; }
+
+.ua-group-inner.depth-1::before,
+.ua-group-inner.depth-2::before,
+.ua-group-inner.depth-3::before,
+.ua-group-inner.depth-4::before,
+.ua-group-inner.depth-5::before,
+.ua-group-inner.depth-6::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  left: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: #b9c7d4;
 }
 
 .ua-group-toggle {

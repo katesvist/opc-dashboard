@@ -20,6 +20,7 @@ const state = {
 };
 
 const GROUP_SUBSCRIBE_MAX_DEPTH = "2";
+const OPC_NODE_DRAG_TYPE = "application/x-opc-node";
 
 const formatDate = (value) => {
   if (!value) return "-";
@@ -57,6 +58,8 @@ const clone = (value) => {
 };
 
 const nodeKey = (endpointId, nodeId) => `${endpointId || ""}\u0000${nodeId || ""}`;
+
+const hasDragType = (dataTransfer, type) => Array.from(dataTransfer?.types || []).includes(type);
 
 const buildByParent = (items) => {
   const byParent = new Map();
@@ -606,8 +609,11 @@ function renderConfigBrowseTree() {
                 <span class="tree-name">${label}</span>
                 <span class="tree-class">${escapeHtml(item.node_class || "")}</span>
                 ${highlight ? `<span class="ws-dot" title="В рабочей области"></span>` : ""}
-                ${mapped ? `<span class="inline-badge">mapped</span>` : ""}
-                ${showAllBtn ? `<button class="group-subscribe-btn" type="button" data-group-subscribe='${nodeJson}'>&#8627; all</button>` : ""}
+                ${mapped ? `<span class="inline-badge">в работе</span>` : ""}
+                ${showAllBtn ? `<button class="group-subscribe-btn" type="button" data-group-subscribe='${nodeJson}' title="Добавить все дочерние Variable-ноды">
+                  <span class="group-subscribe-icon" aria-hidden="true"></span>
+                  <span>все</span>
+                </button>` : ""}
               </div>
               <div class="tree-node-id">${escapeHtml(item.node_id)}</div>
             </div>
@@ -681,7 +687,7 @@ function renderConfigBrowseTree() {
   for (const el of root.querySelectorAll("[data-drag-node]")) {
     el.addEventListener("dragstart", (event) => {
       event.dataTransfer.effectAllowed = "copy";
-      event.dataTransfer.setData("application/x-opc-node", el.dataset.dragNode);
+      event.dataTransfer.setData(OPC_NODE_DRAG_TYPE, el.dataset.dragNode);
     });
   }
 }
@@ -843,7 +849,7 @@ function renderDictionary() {
           <div class="dict-meta">
             <span>${escapeHtml(param.datatype_name || "-")}</span>
             <span>${escapeHtml(param.unit_symbol || param.unit_name || "без единиц")}</span>
-            ${mapped ? `<span class="badge badge-ok">mapped</span>` : ""}
+            ${mapped ? `<span class="badge badge-ok">назначен</span>` : ""}
           </div>
         </article>
       `;
@@ -889,6 +895,7 @@ function assignParamToDraftNode(nodeId, dictParamId) {
   const idx = state.draftNodes.findIndex((n) => n.id === nodeId);
   if (!param || idx < 0) return;
   const node = state.draftNodes[idx];
+  const previousParam = node.parameter_code || "";
   state.draftNodes[idx] = {
     ...node,
     dict_param_id: param.id,
@@ -911,7 +918,10 @@ function assignParamToDraftNode(nodeId, dictParamId) {
   updatePendingConfigChanges();
   renderMappings();
   renderConfigBrowseTree();
-  setConfigStatus(`Параметр «${param.name}» назначен. Не забудьте сохранить.`, "warn");
+  const statusText = previousParam && previousParam !== param.name
+    ? `Параметр переназначен: «${previousParam}» → «${param.name}». Не забудьте сохранить.`
+    : `Параметр «${param.name}» назначен. Не забудьте сохранить.`;
+  setConfigStatus(statusText, "warn");
 }
 
 function assignParamToGroup(groupId, dictParamId) {
@@ -931,6 +941,7 @@ function assignParamToGroup(groupId, dictParamId) {
     if (n.group_path.length < basePath.length) return false;
     return basePath.every((seg, i) => seg === n.group_path[i]);
   });
+  const reassignedCount = groupNodes.filter((n) => n.parameter_code && n.parameter_code !== param.name).length;
   for (const node of groupNodes) {
     const idx = state.draftNodes.indexOf(node);
     if (idx < 0) continue;
@@ -951,7 +962,8 @@ function assignParamToGroup(groupId, dictParamId) {
   renderMappings();
   renderConfigBrowseTree();
   const groupName = baseNode?.group_display_name || groupId;
-  setConfigStatus(`Параметр «${param.name}» назначен ${groupNodes.length} нодам группы «${groupName}». Не забудьте сохранить.`, "warn");
+  const actionText = reassignedCount > 0 ? "переназначен" : "назначен";
+  setConfigStatus(`Параметр «${param.name}» ${actionText} ${groupNodes.length} нодам группы «${groupName}». Не забудьте сохранить.`, "warn");
 }
 
 function assignSelectedPair() {
@@ -1055,22 +1067,40 @@ function renderMappings() {
     const isNew = !savedNode;
     const isChanged = savedNode && JSON.stringify(node) !== JSON.stringify(savedNode);
     const hasParam = node.parameter_code && dictCodes.has(node.parameter_code);
+    const hasMissingParam = node.parameter_code && !hasParam;
     const isPending = state.pendingAssignNodeId === node.id;
     const rowClass = isPending ? "pending-assign" : isNew ? "status-new" : isChanged ? "status-changed" : "status-saved";
-    const paramCell = hasParam
-      ? `<span class="ua-param-code">${escapeHtml(node.parameter_code)}</span>
-         ${node.parameter_name && node.parameter_name !== node.parameter_code ? `<span class="ua-param-name">${escapeHtml(node.parameter_name)}</span>` : ""}`
+    const paramTitle = node.parameter_code
+      ? escapeHtml(node.parameter_code + (node.parameter_name && node.parameter_name !== node.parameter_code ? `\n${node.parameter_name}` : ""))
+      : "";
+    const paramCell = hasParam || hasMissingParam
+      ? `<div class="ua-param-wrap ${hasMissingParam ? "param-missing" : ""}">
+           <div class="ua-param-text">
+             <span class="ua-param-code">${escapeHtml(node.parameter_code)}</span>
+             ${hasMissingParam
+               ? `<span class="ua-param-name">нет в справочнике</span>`
+               : node.parameter_name && node.parameter_name !== node.parameter_code
+                 ? `<span class="ua-param-name">${escapeHtml(node.parameter_name)}</span>`
+                 : ""}
+           </div>
+           <button class="ua-reassign-btn" type="button" data-assign-node="${escapeHtml(node.id)}" data-assign-mode="reassign">
+             ${hasMissingParam ? "Заменить" : "Сменить"}
+           </button>
+         </div>`
       : isPending
-        ? `<span class="assign-hint">↑ выберите в справочнике</span>`
+        ? `<span class="assign-hint">выберите в справочнике</span>`
         : `<button class="ua-assign-btn" type="button" data-assign-node="${escapeHtml(node.id)}">Назначить</button>`;
-    const indentPx = 4 + depth * 14;
+    const indentLevel = Math.max(depth, 0);
     return `
       <tr class="ua-row ${rowClass}" data-node-id="${escapeHtml(node.id)}">
-        <td class="col-num" style="padding-left:${indentPx}px">${rowIdx}</td>
-        <td class="col-nodeid" title="${escapeHtml(node.node_id + (node.browse_name ? '\n' + node.browse_name : ''))}"><code>${escapeHtml(node.node_id)}</code>
-          ${node.browse_name ? `<span class="ua-browse-name">${escapeHtml(node.browse_name)}</span>` : ""}
+        <td class="col-num">${rowIdx}</td>
+        <td class="col-nodeid" title="${escapeHtml(node.node_id + (node.browse_name ? '\n' + node.browse_name : ''))}">
+          <div class="ua-node-cell depth-${Math.min(indentLevel, 6)}">
+            <code>${escapeHtml(node.node_id)}</code>
+            ${node.browse_name ? `<span class="ua-browse-name">${escapeHtml(node.browse_name)}</span>` : ""}
+          </div>
         </td>
-        <td class="col-param-cell" ${hasParam ? `title="${escapeHtml(node.parameter_code + (node.parameter_name && node.parameter_name !== node.parameter_code ? '\n' + node.parameter_name : ''))}"` : ""}>${paramCell}</td>
+        <td class="col-param-cell" ${paramTitle ? `title="${paramTitle}"` : ""}>${paramCell}</td>
         <td class="col-mode">${escapeHtml(node.acquisition_mode || "-")}</td>
         <td class="col-type">${escapeHtml(node.expected_type || "-")}</td>
         <td class="col-del"><button class="ua-del-btn" type="button" data-remove-node="${escapeHtml(node.id)}" title="Удалить">×</button></td>
@@ -1131,20 +1161,24 @@ function renderMappings() {
     const isCollapsed = state.workspaceCollapsed.has(group.group_id);
     const totalCount = countNodes(group);
     const unbound = hasUnbound(group);
+    const assignGroupLabel = unbound ? "Назначить всем" : "Переназначить";
     // Always show full path so the name is never empty
     const pathLabel = Array.isArray(group.group_path) && group.group_path.length > 0
       ? group.group_path.join(" / ")
       : (group.display_name || group.group_id);
     html += `
       <tr class="ua-group-header${depth > 0 ? " ua-group-sub" : ""}">
-        <td colspan="6" class="ua-group-cell">
-          <div class="ua-group-inner" style="padding-left:${8 + depth * 14}px">
-            <button class="ua-group-toggle" type="button" data-toggle-group="${escapeHtml(group.group_id)}">${isCollapsed ? "▶" : "▼"}</button>
+        <td class="ua-group-toggle-cell">
+          <button class="ua-group-toggle" type="button" data-toggle-group="${escapeHtml(group.group_id)}">${isCollapsed ? "▶" : "▼"}</button>
+        </td>
+        <td colspan="5" class="ua-group-cell">
+          <div class="ua-group-inner depth-${Math.min(depth, 6)}">
             <span class="ua-group-name-text" title="${escapeHtml(pathLabel)}">${escapeHtml(pathLabel)}</span>
             <span class="ua-group-count">${totalCount} нод</span>
             <button class="ua-assign-group-btn ${unbound ? "has-unbound" : ""}" type="button"
               data-assign-group="${escapeHtml(group.group_id)}"
-              data-group-name="${escapeHtml(pathLabel)}">Назначить всем</button>
+              data-group-name="${escapeHtml(pathLabel)}"
+              data-assign-mode="${unbound ? "assign" : "reassign"}">${assignGroupLabel}</button>
           </div>
         </td>
       </tr>`;
@@ -1199,7 +1233,7 @@ function renderMappings() {
       state.pendingAssignNodeId = button.dataset.assignNode;
       state.pendingAssignGroupId = null;
       renderMappings();
-      openDictModal();
+      openDictModal(button.dataset.assignMode === "reassign" ? "Переназначить параметр" : "Назначить параметр");
     });
   }
 
@@ -1207,7 +1241,8 @@ function renderMappings() {
     button.addEventListener("click", () => {
       state.pendingAssignGroupId = button.dataset.assignGroup;
       state.pendingAssignNodeId = null;
-      openDictModal(`Назначить всем в «${button.dataset.groupName}»`);
+      const action = button.dataset.assignMode === "reassign" ? "Переназначить" : "Назначить всем";
+      openDictModal(`${action} в «${button.dataset.groupName}»`);
     });
   }
 }
@@ -1308,12 +1343,12 @@ document.getElementById("bindSelectionButton")?.addEventListener("click", () => 
   if (!zone) return;
   let dragCounter = 0;
   zone.addEventListener("dragenter", (event) => {
-    if (!event.dataTransfer.types.includes("application/x-opc-node")) return;
+    if (!hasDragType(event.dataTransfer, OPC_NODE_DRAG_TYPE)) return;
     dragCounter++;
     zone.classList.add("drag-over");
   });
   zone.addEventListener("dragover", (event) => {
-    if (!event.dataTransfer.types.includes("application/x-opc-node")) return;
+    if (!hasDragType(event.dataTransfer, OPC_NODE_DRAG_TYPE)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
   });
@@ -1324,7 +1359,7 @@ document.getElementById("bindSelectionButton")?.addEventListener("click", () => 
   zone.addEventListener("drop", (event) => {
     dragCounter = 0;
     zone.classList.remove("drag-over");
-    const raw = event.dataTransfer.getData("application/x-opc-node");
+    const raw = event.dataTransfer.getData(OPC_NODE_DRAG_TYPE);
     if (!raw) return;
     event.preventDefault();
     try {
