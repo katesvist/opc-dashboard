@@ -7,9 +7,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /dashboard
 
 COPY pyproject.toml README.md /dashboard/
-COPY app /dashboard/app
 
-RUN pip install --no-cache-dir .
+RUN python - <<'PY' > /tmp/runtime-requirements.txt
+import tomllib
+from pathlib import Path
+
+project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
+for dependency in project["dependencies"]:
+    print(dependency)
+PY
+
+RUN pip install --no-cache-dir -r /tmp/runtime-requirements.txt
+
+COPY app /dashboard/app
 
 EXPOSE 8090
 
