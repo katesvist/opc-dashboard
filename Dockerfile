@@ -8,16 +8,8 @@ WORKDIR /dashboard
 
 COPY pyproject.toml README.md /dashboard/
 
-RUN python - <<'PY' > /tmp/runtime-requirements.txt
-import tomllib
-from pathlib import Path
-
-project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
-for dependency in project["dependencies"]:
-    print(dependency)
-PY
-
-RUN pip install --no-cache-dir -r /tmp/runtime-requirements.txt
+RUN python -c 'import tomllib, pathlib; print("\n".join(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["dependencies"]))' > /tmp/runtime-requirements.txt \
+    && pip install --no-cache-dir -r /tmp/runtime-requirements.txt
 
 COPY app /dashboard/app
 
