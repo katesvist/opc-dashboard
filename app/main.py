@@ -29,6 +29,8 @@ class ClientSettings:
     token: str | None
     params_service_base_url: str
     timeout_seconds: float = 300.0
+    snapshot_read_limit: int = 100
+    snapshot_read_concurrency: int = 10
     rabbitmq_management_url: str | None = None
     rabbitmq_user: str = "guest"
     rabbitmq_password: str = "guest"
@@ -42,6 +44,8 @@ class ClientSettings:
             token=os.getenv("OPC_CLIENT_TOKEN") or None,
             params_service_base_url=os.getenv("PARAMS_SERVICE_BASE_URL", "http://127.0.0.1:8000").rstrip("/"),
             timeout_seconds=float(os.getenv("OPC_CLIENT_TIMEOUT_SECONDS", "300")),
+            snapshot_read_limit=max(0, int(os.getenv("OPC_SNAPSHOT_READ_LIMIT", "100"))),
+            snapshot_read_concurrency=max(1, int(os.getenv("OPC_SNAPSHOT_READ_CONCURRENCY", "10"))),
             rabbitmq_management_url=(
                 os.getenv("RABBITMQ_MANAGEMENT_URL", "http://host.docker.internal:15672").rstrip("/")
             ),
@@ -364,6 +368,8 @@ async def snapshot() -> dict[str, Any]:
             "base_url": settings.base_url,
             "params_service_base_url": settings.params_service_base_url,
             "timeout_seconds": settings.timeout_seconds,
+            "snapshot_read_limit": settings.snapshot_read_limit,
+            "snapshot_read_concurrency": settings.snapshot_read_concurrency,
         },
         "healthy": (
             isinstance(health_payload, dict)
@@ -592,23 +598,34 @@ def _unwrap_detail(detail: Any) -> Any:
 
 
 async def _build_nodes_snapshot(subscriptions: list[Any]) -> list[dict[str, Any]]:
+    read_semaphore = asyncio.Semaphore(settings.snapshot_read_concurrency)
+    read_budget = settings.snapshot_read_limit
+    active_read_candidates = 0
+
     async def enrich(item: dict[str, Any]) -> dict[str, Any]:
         read_result = None
         read_error = None
+        read_skipped = False
         if item.get("active") and item.get("endpoint_id") and item.get("node_id"):
-            try:
-                response = await client_api.post(
-                    "/read",
-                    {
-                        "endpoint_id": item["endpoint_id"],
-                        "node_id": item["node_id"],
-                    },
-                )
-                read_result = response if isinstance(response, dict) else None
-            except HTTPException as exc:
-                read_error = str(exc.detail)
-            except Exception as exc:
-                read_error = str(exc)
+            nonlocal active_read_candidates
+            active_read_candidates += 1
+            if active_read_candidates > read_budget:
+                read_skipped = True
+            else:
+                try:
+                    async with read_semaphore:
+                        response = await client_api.post(
+                            "/read",
+                            {
+                                "endpoint_id": item["endpoint_id"],
+                                "node_id": item["node_id"],
+                            },
+                        )
+                    read_result = response if isinstance(response, dict) else None
+                except HTTPException as exc:
+                    read_error = str(exc.detail)
+                except Exception as exc:
+                    read_error = str(exc)
         return {
             "endpoint_id": item.get("endpoint_id"),
             "node_id": item.get("node_id"),
@@ -617,6 +634,7 @@ async def _build_nodes_snapshot(subscriptions: list[Any]) -> list[dict[str, Any]
             "status": item,
             "read": read_result,
             "read_error": read_error,
+            "read_skipped": read_skipped,
         }
 
     typed_subscriptions = [item for item in subscriptions if isinstance(item, dict)]
