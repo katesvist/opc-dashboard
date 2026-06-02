@@ -10,10 +10,12 @@ services:
       OPC_CLIENT_BASE_URL: ${OPC_CLIENT_BASE_URL:-http://opcua-client:8080}
       OPC_CLIENT_TOKEN: ${OPC_CLIENT_TOKEN:-secret-token}
       OPC_CLIENT_TIMEOUT_SECONDS: 3600
-      OPC_SNAPSHOT_READ_LIMIT: ${OPC_SNAPSHOT_READ_LIMIT:-100}
+      OPC_SNAPSHOT_CLIENT_TIMEOUT_SECONDS: ${OPC_SNAPSHOT_CLIENT_TIMEOUT_SECONDS:-10}
+      OPC_SNAPSHOT_READ_LIMIT: ${OPC_SNAPSHOT_READ_LIMIT:-0}
       OPC_SNAPSHOT_READ_CONCURRENCY: ${OPC_SNAPSHOT_READ_CONCURRENCY:-10}
       PARAMS_SERVICE_BASE_URL: ${PARAMS_SERVICE_BASE_URL:-http://host.docker.internal:8000}
       RABBITMQ_MANAGEMENT_URL: ${RABBITMQ_MANAGEMENT_URL:-http://params-validator-rabbitmq:15672}
+      RABBITMQ_TIMEOUT_SECONDS: ${RABBITMQ_TIMEOUT_SECONDS:-5}
       RABBITMQ_USER: ${RABBITMQ_USER:-guest}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
       RABBITMQ_QUEUE: ${RABBITMQ_QUEUE:-validator.in.q}
@@ -23,7 +25,10 @@ services:
       - "127.0.0.1:8090:8090"
     networks:
       - params-full_edge-network
+      - opc-ua-client-service_default
 
 networks:
   params-full_edge-network:
+    external: true
+  opc-ua-client-service_default:
     external: true

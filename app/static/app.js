@@ -17,6 +17,7 @@ const state = {
   workspaceCollapsed: new Set(),
   pendingConfigChanges: false,
   activePage: "dashboard",
+  snapshotLoading: false,
 };
 
 const GROUP_SUBSCRIBE_MAX_DEPTH = "2";
@@ -102,8 +103,15 @@ async function loadOperations() {
 }
 
 async function fetchSnapshot() {
-  state.snapshot = await fetchJson("/api/snapshot");
-  render();
+  if (state.snapshotLoading) return state.snapshot;
+  state.snapshotLoading = true;
+  try {
+    state.snapshot = await fetchJson("/api/snapshot");
+    render();
+    return state.snapshot;
+  } finally {
+    state.snapshotLoading = false;
+  }
 }
 
 function setBusyState(button, busy) {
@@ -1665,5 +1673,6 @@ document.getElementById("efAuthMode").addEventListener("change", (event) => {
 });
 
 setInterval(() => {
+  if (state.activePage !== "dashboard") return;
   fetchSnapshot().catch(() => undefined);
 }, 5000);

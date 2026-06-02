@@ -29,7 +29,9 @@ class ClientSettings:
     token: str | None
     params_service_base_url: str
     timeout_seconds: float = 300.0
-    snapshot_read_limit: int = 100
+    snapshot_client_timeout_seconds: float = 10.0
+    rabbitmq_timeout_seconds: float = 5.0
+    snapshot_read_limit: int = 0
     snapshot_read_concurrency: int = 10
     rabbitmq_management_url: str | None = None
     rabbitmq_user: str = "guest"
@@ -44,7 +46,9 @@ class ClientSettings:
             token=os.getenv("OPC_CLIENT_TOKEN") or None,
             params_service_base_url=os.getenv("PARAMS_SERVICE_BASE_URL", "http://127.0.0.1:8000").rstrip("/"),
             timeout_seconds=float(os.getenv("OPC_CLIENT_TIMEOUT_SECONDS", "300")),
-            snapshot_read_limit=max(0, int(os.getenv("OPC_SNAPSHOT_READ_LIMIT", "100"))),
+            snapshot_client_timeout_seconds=float(os.getenv("OPC_SNAPSHOT_CLIENT_TIMEOUT_SECONDS", "10")),
+            rabbitmq_timeout_seconds=float(os.getenv("RABBITMQ_TIMEOUT_SECONDS", "5")),
+            snapshot_read_limit=max(0, int(os.getenv("OPC_SNAPSHOT_READ_LIMIT", "0"))),
             snapshot_read_concurrency=max(1, int(os.getenv("OPC_SNAPSHOT_READ_CONCURRENCY", "10"))),
             rabbitmq_management_url=(
                 os.getenv("RABBITMQ_MANAGEMENT_URL", "http://host.docker.internal:15672").rstrip("/")
@@ -60,20 +64,26 @@ class OpcClientApi:
     def __init__(self, settings: ClientSettings) -> None:
         self.settings = settings
 
-    async def get(self, path: str, *, tolerate_error: bool = False) -> dict[str, Any] | list[Any] | str:
-        return await asyncio.to_thread(self._request, "GET", path, None, tolerate_error)
+    async def get(
+        self,
+        path: str,
+        *,
+        tolerate_error: bool = False,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any] | list[Any] | str:
+        return await asyncio.to_thread(self._request, "GET", path, None, tolerate_error, timeout_seconds)
 
     async def get_result(self, path: str) -> tuple[int, dict[str, Any] | list[Any] | str]:
         return await asyncio.to_thread(self._request_result, "GET", path, None)
 
     async def post(self, path: str, body: dict[str, Any]) -> dict[str, Any] | list[Any] | str:
-        return await asyncio.to_thread(self._request, "POST", path, body, False)
+        return await asyncio.to_thread(self._request, "POST", path, body, False, None)
 
     async def put(self, path: str, body: dict[str, Any]) -> dict[str, Any] | list[Any] | str:
-        return await asyncio.to_thread(self._request, "PUT", path, body, False)
+        return await asyncio.to_thread(self._request, "PUT", path, body, False, None)
 
     async def delete(self, path: str) -> None:
-        await asyncio.to_thread(self._request, "DELETE", path, None, False)
+        await asyncio.to_thread(self._request, "DELETE", path, None, False, None)
 
     def _request(
         self,
@@ -81,6 +91,7 @@ class OpcClientApi:
         path: str,
         body: dict[str, Any] | None,
         tolerate_error: bool,
+        timeout_seconds: float | None,
     ) -> dict[str, Any] | list[Any] | str:
         payload = json.dumps(body).encode("utf-8") if body is not None else None
         request = Request(
@@ -89,8 +100,9 @@ class OpcClientApi:
             method=method,
             headers=self._headers(has_body=body is not None),
         )
+        effective_timeout = timeout_seconds if timeout_seconds is not None else self.settings.timeout_seconds
         try:
-            with urlopen(request, timeout=self.settings.timeout_seconds) as response:
+            with urlopen(request, timeout=effective_timeout) as response:
                 return self._decode_response(response.read(), response.headers.get("content-type", ""))
         except HTTPError as exc:
             decoded = self._decode_response(exc.read(), exc.headers.get("content-type", ""))
@@ -105,7 +117,7 @@ class OpcClientApi:
         except (TimeoutError, socket.timeout) as exc:
             raise HTTPException(
                 status_code=504,
-                detail=f"OPC UA client API timed out after {self.settings.timeout_seconds:g}s.",
+                detail=f"OPC UA client API timed out after {effective_timeout:g}s.",
             ) from exc
 
     def _request_result(
@@ -180,7 +192,7 @@ class RabbitMqApi:
             },
         )
         try:
-            with urlopen(request, timeout=self.settings.timeout_seconds) as response:
+            with urlopen(request, timeout=self.settings.rabbitmq_timeout_seconds) as response:
                 payload = json.loads(response.read().decode("utf-8"))
                 return {
                     "available": True,
@@ -368,6 +380,7 @@ async def snapshot() -> dict[str, Any]:
             "base_url": settings.base_url,
             "params_service_base_url": settings.params_service_base_url,
             "timeout_seconds": settings.timeout_seconds,
+            "snapshot_client_timeout_seconds": settings.snapshot_client_timeout_seconds,
             "snapshot_read_limit": settings.snapshot_read_limit,
             "snapshot_read_concurrency": settings.snapshot_read_concurrency,
         },
@@ -388,7 +401,11 @@ async def snapshot() -> dict[str, Any]:
 
 async def _safe_client_get(path: str, fallback: Any) -> Any:
     try:
-        return await client_api.get(path, tolerate_error=True)
+        return await client_api.get(
+            path,
+            tolerate_error=True,
+            timeout_seconds=settings.snapshot_client_timeout_seconds,
+        )
     except HTTPException as exc:
         return {"error": exc.detail, "available": False} if isinstance(fallback, dict) else fallback
     except Exception as exc:
