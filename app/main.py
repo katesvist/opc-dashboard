@@ -357,12 +357,15 @@ async def add_static_cache_headers(request, call_next) -> Response:
 
 @app.get("/api/snapshot")
 async def snapshot() -> dict[str, Any]:
-    health_payload, ready_payload, connections, subscriptions, buffer_stats, rabbitmq_stats = await asyncio.gather(
+    health_payload, ready_payload, connections, subscriptions, buffer_stats, events, alarms, capabilities, rabbitmq_stats = await asyncio.gather(
         _safe_client_get("/health", fallback={}),
         _safe_client_get("/ready", fallback={}),
         _safe_client_get("/connections", fallback=[]),
         _safe_client_get("/subscriptions", fallback=[]),
         _safe_client_get("/buffer/stats", fallback={}),
+        _safe_client_get("/events", fallback=[]),
+        _safe_client_get("/alarms", fallback=[]),
+        _safe_client_get("/capabilities", fallback=[]),
         rabbitmq_api.queue_stats(),
     )
 
@@ -372,6 +375,12 @@ async def snapshot() -> dict[str, Any]:
         subscriptions = []
     if not isinstance(buffer_stats, dict):
         buffer_stats = {}
+    if not isinstance(events, list):
+        events = []
+    if not isinstance(alarms, list):
+        alarms = []
+    if not isinstance(capabilities, list):
+        capabilities = []
 
     nodes = await _build_nodes_snapshot(subscriptions)
     return {
@@ -395,6 +404,9 @@ async def snapshot() -> dict[str, Any]:
         "subscriptions": subscriptions,
         "nodes": nodes,
         "buffer": buffer_stats,
+        "events": events,
+        "alarms": alarms,
+        "capabilities": capabilities,
         "rabbitmq": rabbitmq_stats,
     }
 
@@ -422,6 +434,9 @@ async def operations() -> list[dict[str, Any]]:
         {"id": "subscriptions", "title": "Subscriptions", "method": "GET", "path": "/subscriptions", "group": "functional"},
         {"id": "buffer_stats", "title": "Buffer stats", "method": "GET", "path": "/buffer/stats", "group": "technical"},
         {"id": "dead_letter", "title": "Dead letter", "method": "GET", "path": "/dead-letter", "group": "technical"},
+        {"id": "events", "title": "OPC UA Events", "method": "GET", "path": "/events", "group": "technical"},
+        {"id": "alarms", "title": "Alarms & Conditions", "method": "GET", "path": "/alarms", "group": "technical"},
+        {"id": "capabilities", "title": "Capabilities", "method": "GET", "path": "/capabilities", "group": "technical"},
         {"id": "browse", "title": "Browse", "method": "POST", "path": "/browse", "group": "functional", "needs": ["endpoint_id"]},
         {"id": "read", "title": "Read", "method": "POST", "path": "/read", "group": "functional", "needs": ["endpoint_id", "node_id"]},
         {"id": "write", "title": "Write", "method": "POST", "path": "/write", "group": "functional", "needs": ["endpoint_id", "node_id", "value"]},
@@ -566,6 +581,12 @@ async def _execute_client_operation(payload: ClientApiRequest) -> dict[str, Any]
         return await client_api.get("/buffer/stats")
     if operation == "dead_letter":
         return await client_api.get("/dead-letter")
+    if operation == "events":
+        return await client_api.get("/events")
+    if operation == "alarms":
+        return await client_api.get("/alarms")
+    if operation == "capabilities":
+        return await client_api.get("/capabilities")
     if operation == "browse":
         endpoint_id = _require_field(payload.endpoint_id, "endpoint_id")
         body: dict[str, Any] = {

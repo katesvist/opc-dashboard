@@ -157,9 +157,12 @@ function render() {
       ? `${snapshot.rabbitmq.queue ?? "queue"} · ${snapshot.rabbitmq.messages_ready ?? 0} ready / ${snapshot.rabbitmq.messages_unacknowledged ?? 0} unacked`
       : `${snapshot.rabbitmq?.queue ?? "RabbitMQ"} · ${snapshot.rabbitmq?.error ?? "недоступен"}`,
   );
+  setText("eventCount", snapshot.events?.length ?? 0);
+  setText("alarmCount", `${snapshot.alarms?.length ?? 0} alarms`);
 
   renderEndpointOptions(snapshot.connections);
   renderConnections(snapshot.connections, snapshot.readiness?.endpoints || []);
+  renderEvents([...(snapshot.alarms || []), ...(snapshot.events || [])]);
   renderNodes(snapshot.nodes);
 }
 
@@ -327,6 +330,30 @@ function renderConnections(connections, readinessEndpoints = []) {
       <td>${formatDate(item.last_data_at)}</td>
       <td>${item.reconnect_attempts}</td>
       <td class="node-id">${escapeHtml(getConnectionError(item, readinessEndpoints))}</td>
+    `;
+    table.append(row);
+  }
+}
+
+function renderEvents(events) {
+  const table = document.getElementById("eventsTable");
+  if (!table) return;
+  table.innerHTML = "";
+  const visible = events.slice(-20).reverse();
+  if (!visible.length) {
+    table.innerHTML = `<tr><td colspan="4" class="muted">События не получены или подписка выключена.</td></tr>`;
+    return;
+  }
+  for (const event of visible) {
+    const type = event.event_type || event.EventType || event.ConditionName || "-";
+    const time = event.Time || event.ReceiveTime || event.received_at;
+    const message = event.Message || event.message || event.SourceName || event.SourceNode || "-";
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td class="mono">${escapeHtml(event.endpoint_id || "-")}</td>
+      <td>${escapeHtml(formatValue(type))}</td>
+      <td>${escapeHtml(formatDate(time))}</td>
+      <td class="node-id">${escapeHtml(formatValue(message))}</td>
     `;
     table.append(row);
   }

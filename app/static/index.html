@@ -45,6 +45,11 @@
           <strong id="rabbitMessages">0</strong>
           <small id="rabbitDetails">0 ready / 0 unacked</small>
         </div>
+        <div class="summary-item">
+          <span>Events / A&C</span>
+          <strong id="eventCount">0</strong>
+          <small id="alarmCount">0 alarms</small>
+        </div>
       </section>
 
       <section class="two-columns page-section" data-page="dashboard">
@@ -64,6 +69,24 @@
                 </tr>
               </thead>
               <tbody id="connectionsTable"></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-title">
+            <h2>OPC UA события</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Endpoint</th>
+                  <th>Type</th>
+                  <th>Time</th>
+                  <th>Message</th>
+                </tr>
+              </thead>
+              <tbody id="eventsTable"></tbody>
             </table>
           </div>
         </section>
