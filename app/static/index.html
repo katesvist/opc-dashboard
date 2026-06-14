@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OPC UA Client Dashboard</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260601-configuration-ui" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260614-diagnostics-validation" />
   </head>
   <body>
     <main class="layout">
@@ -15,6 +15,7 @@
         </div>
         <div class="topbar-actions">
           <button class="nav-button active" data-page-target="dashboard" type="button">Мониторинг</button>
+          <button class="nav-button" data-page-target="diagnostics" type="button">Диагностика</button>
           <button class="nav-button" data-page-target="config" type="button">Конфигурация</button>
           <button class="nav-button" data-page-target="sources" type="button">Источники</button>
           <span id="readyBadge" class="badge badge-muted">checking</span>
@@ -132,7 +133,7 @@
           </div>
           <input id="nodeFilter" class="filter" type="search" placeholder="Фильтр по коду, node id, endpoint..." />
         </div>
-        <div class="table-wrap">
+        <div class="table-wrap table-wrap-scroll table-wrap-nodes">
           <table class="nodes-monitoring-table">
             <thead>
               <tr>
@@ -147,6 +148,100 @@
               </tr>
             </thead>
             <tbody id="nodesTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="summary page-section hidden" data-page="diagnostics">
+        <div class="summary-item">
+          <span>Published</span>
+          <strong id="diagPublishedCount">0</strong>
+          <small>отправлено в RabbitMQ</small>
+        </div>
+        <div class="summary-item">
+          <span>Suppressed</span>
+          <strong id="diagSuppressedCount">0</strong>
+          <small>подавлено клиентом</small>
+        </div>
+        <div class="summary-item">
+          <span>Buffered</span>
+          <strong id="diagBufferedCount">0</strong>
+          <small>сохранено в буфер</small>
+        </div>
+        <div class="summary-item">
+          <span>Status alarms</span>
+          <strong id="diagAlarmCount">0</strong>
+          <small id="diagAlarmHint">активных статусов</small>
+        </div>
+      </section>
+
+      <section class="panel page-section hidden" data-page="diagnostics">
+        <div class="panel-title">
+          <h2>OPC UA status alarms</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Severity</th>
+                <th>Nodes</th>
+                <th>Last seen</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody id="statusAlarmsTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel page-section hidden" data-page="diagnostics">
+        <div class="panel-title">
+          <h2>История status alarms</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Action</th>
+                <th>Status</th>
+                <th>At</th>
+                <th>Node</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody id="statusAlarmHistoryTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel page-section hidden" data-page="diagnostics">
+        <div class="panel-title inline-title">
+          <div>
+            <h2>Последние решения клиента</h2>
+          </div>
+          <div class="pagination-controls">
+            <span id="publishAuditMeta" class="muted">0 записей</span>
+            <button id="publishAuditPrev" class="btn compact" type="button">Назад</button>
+            <span id="publishAuditPage" class="muted">1 / 1</span>
+            <button id="publishAuditNext" class="btn compact" type="button">Вперед</button>
+          </div>
+        </div>
+        <div class="table-wrap table-wrap-scroll table-wrap-audit">
+          <table class="diagnostics-audit-table">
+            <thead>
+              <tr>
+                <th>Decision</th>
+                <th>Validation</th>
+                <th>Status</th>
+                <th>Value</th>
+                <th>Source time</th>
+                <th>Recorded</th>
+                <th>Node</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody id="publishAuditTable"></tbody>
           </table>
         </div>
       </section>
@@ -348,6 +443,6 @@
         <div id="endpointsList" class="endpoints-list"></div>
       </section>
     </main>
-    <script src="/assets/app.js?v=20260601-configuration-ui" defer></script>
+    <script src="/assets/app.js?v=20260614-diagnostics-validation" defer></script>
   </body>
 </html>

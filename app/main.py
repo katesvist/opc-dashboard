@@ -357,7 +357,21 @@ async def add_static_cache_headers(request, call_next) -> Response:
 
 @app.get("/api/snapshot")
 async def snapshot() -> dict[str, Any]:
-    health_payload, ready_payload, connections, subscriptions, buffer_stats, events, alarms, capabilities, rabbitmq_stats = await asyncio.gather(
+    (
+        health_payload,
+        ready_payload,
+        connections,
+        subscriptions,
+        buffer_stats,
+        events,
+        alarms,
+        capabilities,
+        publish_stats,
+        publish_audit,
+        status_alarms,
+        status_alarm_history,
+        rabbitmq_stats,
+    ) = await asyncio.gather(
         _safe_client_get("/health", fallback={}),
         _safe_client_get("/ready", fallback={}),
         _safe_client_get("/connections", fallback=[]),
@@ -366,6 +380,10 @@ async def snapshot() -> dict[str, Any]:
         _safe_client_get("/events", fallback=[]),
         _safe_client_get("/alarms", fallback=[]),
         _safe_client_get("/capabilities", fallback=[]),
+        _safe_client_get("/publish/stats", fallback={}),
+        _safe_client_get("/publish/audit?limit=1000", fallback=[]),
+        _safe_client_get("/status-alarms", fallback=[]),
+        _safe_client_get("/status-alarms/history?limit=100", fallback=[]),
         rabbitmq_api.queue_stats(),
     )
 
@@ -381,6 +399,14 @@ async def snapshot() -> dict[str, Any]:
         alarms = []
     if not isinstance(capabilities, list):
         capabilities = []
+    if not isinstance(publish_stats, dict):
+        publish_stats = {}
+    if not isinstance(publish_audit, list):
+        publish_audit = []
+    if not isinstance(status_alarms, list):
+        status_alarms = []
+    if not isinstance(status_alarm_history, list):
+        status_alarm_history = []
 
     nodes = await _build_nodes_snapshot(subscriptions)
     return {
@@ -407,6 +433,12 @@ async def snapshot() -> dict[str, Any]:
         "events": events,
         "alarms": alarms,
         "capabilities": capabilities,
+        "diagnostics": {
+            "publish_stats": publish_stats,
+            "publish_audit": publish_audit,
+            "status_alarms": status_alarms,
+            "status_alarm_history": status_alarm_history,
+        },
         "rabbitmq": rabbitmq_stats,
     }
 
@@ -434,6 +466,10 @@ async def operations() -> list[dict[str, Any]]:
         {"id": "subscriptions", "title": "Subscriptions", "method": "GET", "path": "/subscriptions", "group": "functional"},
         {"id": "buffer_stats", "title": "Buffer stats", "method": "GET", "path": "/buffer/stats", "group": "technical"},
         {"id": "dead_letter", "title": "Dead letter", "method": "GET", "path": "/dead-letter", "group": "technical"},
+        {"id": "publish_stats", "title": "Publish stats", "method": "GET", "path": "/publish/stats", "group": "technical"},
+        {"id": "publish_audit", "title": "Publish audit", "method": "GET", "path": "/publish/audit?limit=1000", "group": "technical"},
+        {"id": "status_alarms", "title": "Status alarms", "method": "GET", "path": "/status-alarms", "group": "technical"},
+        {"id": "status_alarm_history", "title": "Status alarm history", "method": "GET", "path": "/status-alarms/history?limit=100", "group": "technical"},
         {"id": "events", "title": "OPC UA Events", "method": "GET", "path": "/events", "group": "technical"},
         {"id": "alarms", "title": "Alarms & Conditions", "method": "GET", "path": "/alarms", "group": "technical"},
         {"id": "capabilities", "title": "Capabilities", "method": "GET", "path": "/capabilities", "group": "technical"},
@@ -581,6 +617,14 @@ async def _execute_client_operation(payload: ClientApiRequest) -> dict[str, Any]
         return await client_api.get("/buffer/stats")
     if operation == "dead_letter":
         return await client_api.get("/dead-letter")
+    if operation == "publish_stats":
+        return await client_api.get("/publish/stats")
+    if operation == "publish_audit":
+        return await client_api.get("/publish/audit?limit=1000")
+    if operation == "status_alarms":
+        return await client_api.get("/status-alarms")
+    if operation == "status_alarm_history":
+        return await client_api.get("/status-alarms/history?limit=100")
     if operation == "events":
         return await client_api.get("/events")
     if operation == "alarms":

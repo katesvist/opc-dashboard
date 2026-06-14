@@ -195,6 +195,20 @@ button:active {
   color: #fff;
 }
 
+.btn.compact {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.btn:disabled,
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  transform: none;
+  box-shadow: none;
+}
+
 .btn.is-loading,
 button.is-loading {
   color: transparent !important;
@@ -348,6 +362,18 @@ select {
   border-radius: 6px;
 }
 
+.table-wrap-scroll {
+  overflow: auto;
+}
+
+.table-wrap-nodes {
+  max-height: 950px;
+}
+
+.table-wrap-audit {
+  max-height: 760px;
+}
+
 table {
   width: 100%;
   min-width: 760px;
@@ -477,6 +503,54 @@ tbody tr:hover {
   font-size: 11px;
   color: var(--muted);
 }
+
+.diagnostics-stats {
+  display: grid;
+  gap: 6px;
+}
+
+.diag-stat-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+  border-bottom: 1px solid var(--line);
+  padding: 6px 0;
+}
+
+.diag-stat-row span {
+  min-width: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.diag-stat-row strong {
+  font-family: var(--mono);
+}
+
+.diag-stat-section {
+  margin-top: 8px;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.diagnostics-audit-table {
+  table-layout: fixed;
+}
+
+.diagnostics-audit-table th:nth-child(1) { width: 104px; }
+.diagnostics-audit-table th:nth-child(2) { width: 104px; }
+.diagnostics-audit-table th:nth-child(3) { width: 150px; }
+.diagnostics-audit-table th:nth-child(4) { width: 130px; }
+.diagnostics-audit-table th:nth-child(5) { width: 150px; }
+.diagnostics-audit-table th:nth-child(6) { width: 150px; }
+.diagnostics-audit-table th:nth-child(8) { width: 260px; }
 
 .response-box {
   max-height: 360px;

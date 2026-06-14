@@ -18,10 +18,12 @@ const state = {
   pendingConfigChanges: false,
   activePage: "dashboard",
   snapshotLoading: false,
+  publishAuditPage: 1,
 };
 
 const GROUP_SUBSCRIBE_MAX_DEPTH = "2";
 const OPC_NODE_DRAG_TYPE = "application/x-opc-node";
+const PUBLISH_AUDIT_PAGE_SIZE = 200;
 
 const formatDate = (value) => {
   if (!value) return "-";
@@ -163,6 +165,7 @@ function render() {
   renderEndpointOptions(snapshot.connections);
   renderConnections(snapshot.connections, snapshot.readiness?.endpoints || []);
   renderEvents([...(snapshot.alarms || []), ...(snapshot.events || [])]);
+  renderDiagnostics(snapshot.diagnostics || {});
   renderNodes(snapshot.nodes);
 }
 
@@ -354,6 +357,133 @@ function renderEvents(events) {
       <td>${escapeHtml(formatValue(type))}</td>
       <td>${escapeHtml(formatDate(time))}</td>
       <td class="node-id">${escapeHtml(formatValue(message))}</td>
+    `;
+    table.append(row);
+  }
+}
+
+function decisionBadge(decision) {
+  if (decision === "published") return "badge-ok";
+  if (decision === "suppressed") return "badge-muted";
+  if (decision === "buffered") return "badge-warn";
+  if (decision === "failed") return "badge-bad";
+  return "badge-muted";
+}
+
+function validationBadge(validationState) {
+  if (validationState === "valid") return "badge-ok";
+  if (validationState === "invalid") return "badge-bad";
+  if (validationState === "duplicate") return "badge-muted";
+  return "badge-muted";
+}
+
+function severityBadge(severity) {
+  if (severity === "critical" || severity === "major") return "badge-bad";
+  if (severity === "warning") return "badge-warn";
+  if (severity === "info") return "badge-muted";
+  return "badge-muted";
+}
+
+function renderDiagnostics(diagnostics) {
+  const publishStats = diagnostics.publish_stats || {};
+  const decisions = publishStats.decisions || {};
+  const alarms = Array.isArray(diagnostics.status_alarms) ? diagnostics.status_alarms : [];
+  const audit = Array.isArray(diagnostics.publish_audit) ? diagnostics.publish_audit : [];
+  const history = Array.isArray(diagnostics.status_alarm_history) ? diagnostics.status_alarm_history : [];
+
+  setText("diagPublishedCount", decisions.published ?? 0);
+  setText("diagSuppressedCount", decisions.suppressed ?? 0);
+  setText("diagBufferedCount", decisions.buffered ?? 0);
+  setText("diagAlarmCount", alarms.length);
+  setText("diagAlarmHint", `${alarms.filter((item) => !item.stale).length} активных / ${alarms.filter((item) => item.stale).length} stale`);
+  setText("publishAuditMeta", `${audit.length} записей · окно ${publishStats.window_records ?? 0}/${publishStats.max_records ?? "-"}`);
+
+  renderStatusAlarms(alarms);
+  renderPublishAudit(audit);
+  renderStatusAlarmHistory(history);
+}
+
+function renderStatusAlarms(alarms) {
+  const table = document.getElementById("statusAlarmsTable");
+  if (!table) return;
+  table.innerHTML = "";
+  if (!alarms.length) {
+    table.innerHTML = `<tr><td colspan="5" class="muted">Активных OPC UA status alarms нет.</td></tr>`;
+    return;
+  }
+  for (const alarm of alarms) {
+    const row = document.createElement("tr");
+    const statusLabel = `${alarm.status_name || "-"} (${alarm.status_code ?? "-"})`;
+    row.innerHTML = `
+      <td><span class="mono">${escapeHtml(statusLabel)}</span>${alarm.stale ? `<div class="muted">stale</div>` : ""}</td>
+      <td><span class="badge ${severityBadge(alarm.severity)}">${escapeHtml(alarm.severity || "-")}</span></td>
+      <td>${escapeHtml(alarm.affected_nodes ?? 0)}</td>
+      <td>${escapeHtml(formatDate(alarm.last_seen_at))}</td>
+      <td class="node-id">${escapeHtml(alarm.message || alarm.status_text || "-")}</td>
+    `;
+    table.append(row);
+  }
+}
+
+function renderPublishAudit(records) {
+  const table = document.getElementById("publishAuditTable");
+  if (!table) return;
+  table.innerHTML = "";
+  if (!records.length) {
+    table.innerHTML = `<tr><td colspan="8" class="muted">Последних решений публикации нет.</td></tr>`;
+    setPublishAuditPagination(0, 1);
+    return;
+  }
+  const totalPages = Math.max(1, Math.ceil(records.length / PUBLISH_AUDIT_PAGE_SIZE));
+  state.publishAuditPage = Math.min(Math.max(state.publishAuditPage, 1), totalPages);
+  const start = (state.publishAuditPage - 1) * PUBLISH_AUDIT_PAGE_SIZE;
+  const pageRecords = records.slice(start, start + PUBLISH_AUDIT_PAGE_SIZE);
+  setPublishAuditPagination(records.length, totalPages);
+
+  for (const record of pageRecords) {
+    const row = document.createElement("tr");
+    const statusLabel = `${record.status_name || record.quality_code || "-"} (${record.published_status ?? "-"})`;
+    const validationState = record.validation_state || "-";
+    const validationErrors = Array.isArray(record.validation_errors) ? record.validation_errors.filter(Boolean) : [];
+    const reason = [record.reason, record.error, ...validationErrors].filter(Boolean).join(" · ") || "-";
+    row.innerHTML = `
+      <td><span class="badge ${decisionBadge(record.decision)}">${escapeHtml(record.decision || "-")}</span></td>
+      <td><span class="badge ${validationBadge(validationState)}">${escapeHtml(validationState)}</span></td>
+      <td class="mono">${escapeHtml(statusLabel)}</td>
+      <td class="node-id">${escapeHtml(record.value_preview || "-")}</td>
+      <td>${escapeHtml(formatDate(record.source_timestamp))}</td>
+      <td>${escapeHtml(formatDate(record.recorded_at))}</td>
+      <td class="node-id">${escapeHtml(record.parameter_code || record.node_id || "-")}</td>
+      <td class="node-id">${escapeHtml(reason)}</td>
+    `;
+    table.append(row);
+  }
+}
+
+function setPublishAuditPagination(totalRecords, totalPages) {
+  setText("publishAuditPage", `${state.publishAuditPage} / ${totalPages}`);
+  const prev = document.getElementById("publishAuditPrev");
+  const next = document.getElementById("publishAuditNext");
+  if (prev) prev.disabled = state.publishAuditPage <= 1 || totalRecords <= PUBLISH_AUDIT_PAGE_SIZE;
+  if (next) next.disabled = state.publishAuditPage >= totalPages || totalRecords <= PUBLISH_AUDIT_PAGE_SIZE;
+}
+
+function renderStatusAlarmHistory(items) {
+  const table = document.getElementById("statusAlarmHistoryTable");
+  if (!table) return;
+  table.innerHTML = "";
+  if (!items.length) {
+    table.innerHTML = `<tr><td colspan="5" class="muted">Истории status alarms пока нет.</td></tr>`;
+    return;
+  }
+  for (const item of items) {
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td><span class="badge ${item.action === "raised" ? "badge-warn" : "badge-ok"}">${escapeHtml(item.action || "-")}</span></td>
+      <td class="mono">${escapeHtml(`${item.status_name || "-"} (${item.status_code ?? "-"})`)}</td>
+      <td>${escapeHtml(formatDate(item.at))}</td>
+      <td class="node-id">${escapeHtml(item.parameter_code || item.node_id || "-")}</td>
+      <td class="node-id">${escapeHtml(item.message || "-")}</td>
     `;
     table.append(row);
   }
@@ -1352,6 +1482,14 @@ for (const button of document.querySelectorAll("[data-page-target]")) {
 document.getElementById("nodeFilter").addEventListener("input", (event) => {
   state.filter = event.target.value;
   if (state.snapshot) renderNodes(state.snapshot.nodes);
+});
+document.getElementById("publishAuditPrev")?.addEventListener("click", () => {
+  state.publishAuditPage = Math.max(1, state.publishAuditPage - 1);
+  renderPublishAudit(state.snapshot?.diagnostics?.publish_audit || []);
+});
+document.getElementById("publishAuditNext")?.addEventListener("click", () => {
+  state.publishAuditPage += 1;
+  renderPublishAudit(state.snapshot?.diagnostics?.publish_audit || []);
 });
 document.getElementById("mappingFilter").addEventListener("input", () => {
   renderMappings();
