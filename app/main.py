@@ -370,6 +370,7 @@ async def snapshot() -> dict[str, Any]:
         publish_audit,
         status_alarms,
         status_alarm_history,
+        connection_events,
         rabbitmq_stats,
     ) = await asyncio.gather(
         _safe_client_get("/health", fallback={}),
@@ -384,6 +385,7 @@ async def snapshot() -> dict[str, Any]:
         _safe_client_get("/publish/audit?limit=1000", fallback=[]),
         _safe_client_get("/status-alarms", fallback=[]),
         _safe_client_get("/status-alarms/history?limit=100", fallback=[]),
+        _safe_client_get("/connection-events?limit=100", fallback=[]),
         rabbitmq_api.queue_stats(),
     )
 
@@ -407,6 +409,8 @@ async def snapshot() -> dict[str, Any]:
         status_alarms = []
     if not isinstance(status_alarm_history, list):
         status_alarm_history = []
+    if not isinstance(connection_events, list):
+        connection_events = []
 
     nodes = await _build_nodes_snapshot(subscriptions)
     return {
@@ -438,6 +442,7 @@ async def snapshot() -> dict[str, Any]:
             "publish_audit": publish_audit,
             "status_alarms": status_alarms,
             "status_alarm_history": status_alarm_history,
+            "connection_events": connection_events,
         },
         "rabbitmq": rabbitmq_stats,
     }
@@ -470,6 +475,7 @@ async def operations() -> list[dict[str, Any]]:
         {"id": "publish_audit", "title": "Publish audit", "method": "GET", "path": "/publish/audit?limit=1000", "group": "technical"},
         {"id": "status_alarms", "title": "Status alarms", "method": "GET", "path": "/status-alarms", "group": "technical"},
         {"id": "status_alarm_history", "title": "Status alarm history", "method": "GET", "path": "/status-alarms/history?limit=100", "group": "technical"},
+        {"id": "connection_events", "title": "Connection events", "method": "GET", "path": "/connection-events?limit=100", "group": "technical"},
         {"id": "events", "title": "OPC UA Events", "method": "GET", "path": "/events", "group": "technical"},
         {"id": "alarms", "title": "Alarms & Conditions", "method": "GET", "path": "/alarms", "group": "technical"},
         {"id": "capabilities", "title": "Capabilities", "method": "GET", "path": "/capabilities", "group": "technical"},
@@ -625,6 +631,8 @@ async def _execute_client_operation(payload: ClientApiRequest) -> dict[str, Any]
         return await client_api.get("/status-alarms")
     if operation == "status_alarm_history":
         return await client_api.get("/status-alarms/history?limit=100")
+    if operation == "connection_events":
+        return await client_api.get("/connection-events?limit=100")
     if operation == "events":
         return await client_api.get("/events")
     if operation == "alarms":

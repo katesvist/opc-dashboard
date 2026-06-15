@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OPC UA Client Dashboard</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260614-diagnostics-validation" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260615-connection-diagnostics" />
   </head>
   <body>
     <main class="layout">
@@ -64,9 +64,12 @@
                 <tr>
                   <th>Endpoint</th>
                   <th>State</th>
+                  <th>Phase</th>
                   <th>Last data</th>
+                  <th>Next retry</th>
                   <th>Reconnects</th>
                   <th>Error</th>
+                  <th>Action</th>
                 </tr>
               </thead>
               <tbody id="connectionsTable"></tbody>
@@ -91,6 +94,27 @@
             </table>
           </div>
         </section>
+      </section>
+
+      <section class="panel page-section" data-page="dashboard">
+        <div class="panel-title">
+          <h2>История подключения</h2>
+          <p id="connectionEventsMeta">последние события подключения</p>
+        </div>
+        <div class="table-wrap connection-events-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Endpoint</th>
+                <th>Event</th>
+                <th>Stage</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody id="connectionEventsTable"></tbody>
+          </table>
+        </div>
       </section>
 
       <section class="panel page-section" data-page="dashboard">
@@ -443,6 +467,6 @@
         <div id="endpointsList" class="endpoints-list"></div>
       </section>
     </main>
-    <script src="/assets/app.js?v=20260614-diagnostics-validation" defer></script>
+    <script src="/assets/app.js?v=20260615-connection-diagnostics" defer></script>
   </body>
 </html>

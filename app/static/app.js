@@ -38,6 +38,19 @@ const formatValue = (value) => {
   return String(value);
 };
 
+const formatDurationUntil = (value) => {
+  if (!value) return "-";
+  const target = new Date(value);
+  if (Number.isNaN(target.getTime())) return "-";
+  const totalSeconds = Math.max(0, Math.floor((target.getTime() - Date.now()) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}ч ${String(minutes).padStart(2, "0")}м`;
+  if (minutes > 0) return `${minutes}м ${String(seconds).padStart(2, "0")}с`;
+  return `${seconds}с`;
+};
+
 const statusBadge = (stateValue, connected = false) => {
   if (stateValue === "connected" || connected) return "badge-ok";
   if (stateValue === "degraded" || stateValue === "reconnecting") return "badge-warn";
@@ -164,6 +177,7 @@ function render() {
 
   renderEndpointOptions(snapshot.connections);
   renderConnections(snapshot.connections, snapshot.readiness?.endpoints || []);
+  renderConnectionEvents(snapshot.diagnostics?.connection_events || []);
   renderEvents([...(snapshot.alarms || []), ...(snapshot.events || [])]);
   renderDiagnostics(snapshot.diagnostics || {});
   renderNodes(snapshot.nodes);
@@ -311,6 +325,10 @@ function getConnectionError(item, readinessEndpoints) {
   if (item.last_error) return item.last_error;
   const readinessMatch = readinessEndpoints.find((entry) => entry.endpoint_id === item.endpoint_id);
   if (readinessMatch?.last_error) return readinessMatch.last_error;
+  if (item.cooldown) return `Cooldown до ${formatDate(item.cooldown_until)}. Следующая попытка через ${formatDurationUntil(item.cooldown_until)}.`;
+  if (item.connection_phase === "discovery") return "Discovery: клиент ожидает endpoints от OPC UA сервера.";
+  if (item.connection_phase === "session") return "Session: клиент открывает OPC UA сессию.";
+  if (item.connection_phase === "subscriptions") return "Subscriptions: клиент создает подписки.";
   if (item.state === "failed") return "Подключение завершилось ошибкой, но OPC UA client не передал текст причины.";
   if (item.state === "reconnecting") return "Идет переподключение к OPC UA серверу.";
   if (item.state === "disconnected") return "Соединение разорвано.";
@@ -321,21 +339,75 @@ function renderConnections(connections, readinessEndpoints = []) {
   const table = document.getElementById("connectionsTable");
   table.innerHTML = "";
   if (!connections.length) {
-    table.innerHTML = `<tr><td colspan="5" class="muted">Endpoint не зарегистрированы.</td></tr>`;
+    table.innerHTML = `<tr><td colspan="8" class="muted">Endpoint не зарегистрированы.</td></tr>`;
     return;
   }
 
   for (const item of connections) {
     const row = document.createElement("tr");
+    const nextRetry = item.next_retry_at || item.cooldown_until;
+    const phase = item.cooldown ? "cooldown" : item.connection_phase || item.state || "-";
+    const retryHint = nextRetry
+      ? `${formatDate(nextRetry)}${item.cooldown ? ` · ${formatDurationUntil(nextRetry)}` : ""}`
+      : "-";
+    const error = getConnectionError(item, readinessEndpoints);
     row.innerHTML = `
       <td class="mono">${item.endpoint_id}</td>
       <td><span class="badge ${statusBadge(item.state, item.connected)}">${item.state}</span></td>
+      <td><span class="badge ${phaseBadge(phase)}">${escapeHtml(phase)}</span></td>
       <td>${formatDate(item.last_data_at)}</td>
+      <td class="node-id">${escapeHtml(retryHint)}</td>
       <td>${item.reconnect_attempts}</td>
-      <td class="node-id">${escapeHtml(getConnectionError(item, readinessEndpoints))}</td>
+      <td class="node-id">${escapeHtml(error)}</td>
+      <td><button class="btn compact reconnect-now" type="button" data-endpoint-id="${escapeHtml(item.endpoint_id)}">Reconnect</button></td>
     `;
     table.append(row);
   }
+}
+
+function phaseBadge(phase) {
+  if (phase === "connected" || phase === "monitoring") return "badge-ok";
+  if (phase === "cooldown") return "badge-warn";
+  if (["connecting", "discovery", "session", "session_check", "subscriptions", "retry_wait", "reconnecting"].includes(phase)) {
+    return "badge-warn";
+  }
+  if (phase === "failed" || phase === "disconnected") return "badge-bad";
+  return "badge-muted";
+}
+
+function renderConnectionEvents(events) {
+  const table = document.getElementById("connectionEventsTable");
+  if (!table) return;
+  table.innerHTML = "";
+  setText("connectionEventsMeta", `${events.length} последних событий`);
+  if (!events.length) {
+    table.innerHTML = `<tr><td colspan="5" class="muted">Истории подключения пока нет.</td></tr>`;
+    return;
+  }
+  for (const item of events.slice(0, 30)) {
+    const row = document.createElement("tr");
+    const details = connectionEventDetails(item);
+    row.innerHTML = `
+      <td>${escapeHtml(formatDate(item.recorded_at))}</td>
+      <td class="mono">${escapeHtml(item.endpoint_id || "-")}</td>
+      <td class="mono">${escapeHtml(item.event || "-")}</td>
+      <td><span class="badge ${phaseBadge(item.stage || item.phase)}">${escapeHtml(item.stage || item.phase || "-")}</span></td>
+      <td class="node-id">${escapeHtml(details)}</td>
+    `;
+    table.append(row);
+  }
+}
+
+function connectionEventDetails(item) {
+  const parts = [];
+  if (item.error) parts.push(item.error);
+  if (item.url) parts.push(item.url);
+  if (item.error_type) parts.push(`type: ${item.error_type}`);
+  if (item.attempts !== undefined) parts.push(`attempts: ${item.attempts}`);
+  if (item.cooldown_seconds !== undefined) parts.push(`cooldown: ${item.cooldown_seconds}s`);
+  if (item.next_retry_at) parts.push(`next: ${formatDate(item.next_retry_at)}`);
+  if (item.endpoint_count !== undefined) parts.push(`endpoints: ${item.endpoint_count}`);
+  return parts.join(" · ") || "-";
 }
 
 function renderEvents(events) {
@@ -1467,6 +1539,23 @@ function mapDatatypeToExpectedType(datatype) {
 
 document.getElementById("refreshButton").addEventListener("click", (event) => {
   withBusy(event.currentTarget, fetchSnapshot).catch(() => undefined);
+});
+document.addEventListener("click", (event) => {
+  const button = event.target.closest(".reconnect-now");
+  if (!button) return;
+  const endpointId = button.dataset.endpointId;
+  if (!endpointId) return;
+  withBusy(button, async () => {
+    await fetchJson("/api/client/request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "reconnect", endpoint_id: endpointId }),
+    });
+    await fetchSnapshot();
+  }).catch((error) => {
+    const result = document.getElementById("apiResult");
+    if (result) result.textContent = error.message;
+  });
 });
 for (const button of document.querySelectorAll("[data-page-target]")) {
   button.addEventListener("click", async () => {

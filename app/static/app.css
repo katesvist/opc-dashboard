@@ -540,6 +540,17 @@ tbody tr:hover {
   flex-wrap: wrap;
 }
 
+.btn.compact {
+  min-height: 30px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.connection-events-wrap {
+  max-height: 360px;
+  overflow: auto;
+}
+
 .diagnostics-audit-table {
   table-layout: fixed;
 }
