@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OPC UA Client Dashboard</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260615-connection-diagnostics" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260617-node-enabled" />
   </head>
   <body>
     <main class="layout">
@@ -157,11 +157,27 @@
           </div>
           <input id="nodeFilter" class="filter" type="search" placeholder="Фильтр по коду, node id, endpoint..." />
         </div>
+        <div class="nodes-toolbar">
+          <label class="label-checkbox compact">
+            <input id="nodesSelectPage" type="checkbox" />
+            Выбрать страницу
+          </label>
+          <span id="nodesPageMeta" class="muted">0 нод</span>
+          <div class="pagination-controls">
+            <button id="nodesPrev" class="btn compact secondary" type="button">Назад</button>
+            <span id="nodesPageIndicator" class="mono">1 / 1</span>
+            <button id="nodesNext" class="btn compact secondary" type="button">Вперед</button>
+          </div>
+          <button id="nodesEnableSelected" class="btn compact secondary" type="button">Активировать выбранные</button>
+          <button id="nodesDisableSelected" class="btn compact danger" type="button">Деактивировать выбранные</button>
+        </div>
         <div class="table-wrap table-wrap-scroll table-wrap-nodes">
           <table class="nodes-monitoring-table">
             <thead>
               <tr>
+                <th class="nt-select"></th>
                 <th class="nt-status">Статус</th>
+                <th class="nt-enabled">Конфиг</th>
                 <th class="nt-param">Параметр</th>
                 <th class="nt-value">Значение</th>
                 <th class="nt-quality">Качество</th>
@@ -169,6 +185,7 @@
                 <th class="nt-nodeid">Node ID</th>
                 <th class="nt-endpoint">Endpoint</th>
                 <th class="nt-mode">Режим</th>
+                <th class="nt-action">Действие</th>
               </tr>
             </thead>
             <tbody id="nodesTable"></tbody>
@@ -467,6 +484,6 @@
         <div id="endpointsList" class="endpoints-list"></div>
       </section>
     </main>
-    <script src="/assets/app.js?v=20260615-connection-diagnostics" defer></script>
+    <script src="/assets/app.js?v=20260617-node-enabled" defer></script>
   </body>
 </html>

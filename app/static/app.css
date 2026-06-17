@@ -195,6 +195,17 @@ button:active {
   color: #fff;
 }
 
+.btn.danger {
+  border-color: rgba(154, 52, 18, 0.35);
+  color: #9a3412;
+  background: #fff7ed;
+}
+
+.btn.danger:hover {
+  color: #7c2d12;
+  background: #ffedd5;
+}
+
 .btn.compact {
   min-height: 28px;
   padding: 4px 8px;
@@ -367,7 +378,7 @@ select {
 }
 
 .table-wrap-nodes {
-  max-height: 950px;
+  max-height: 760px;
 }
 
 .table-wrap-audit {
@@ -428,19 +439,44 @@ tbody tr:hover {
 }
 
 /* Monitoring nodes table */
+.nodes-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0 12px;
+}
+
+.nodes-toolbar .pagination-controls {
+  margin-left: auto;
+}
+
 .nodes-monitoring-table {
   table-layout: fixed;
 }
+.nodes-monitoring-table th.nt-select  { width: 38px; }
 .nodes-monitoring-table th.nt-status  { width: 80px; }
+.nodes-monitoring-table th.nt-enabled { width: 86px; }
 .nodes-monitoring-table th.nt-param   { width: 160px; }
 .nodes-monitoring-table th.nt-value   { width: 130px; }
 .nodes-monitoring-table th.nt-quality { width: 82px; }
 .nodes-monitoring-table th.nt-time    { width: 152px; }
 .nodes-monitoring-table th.nt-endpoint{ width: 150px; }
 .nodes-monitoring-table th.nt-mode    { width: 84px; }
+.nodes-monitoring-table th.nt-action  { width: 120px; }
 
 .nodes-monitoring-table td {
   vertical-align: middle;
+}
+
+.nodes-monitoring-table td.nt-select,
+.nodes-monitoring-table td.nt-action {
+  cursor: default;
+}
+
+.nodes-monitoring-table td.nt-select input {
+  width: 16px;
+  height: 16px;
 }
 .nodes-monitoring-table td.nt-param {
   font-weight: 600;

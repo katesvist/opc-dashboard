@@ -82,6 +82,9 @@ class OpcClientApi:
     async def put(self, path: str, body: dict[str, Any]) -> dict[str, Any] | list[Any] | str:
         return await asyncio.to_thread(self._request, "PUT", path, body, False, None)
 
+    async def patch(self, path: str, body: dict[str, Any]) -> dict[str, Any] | list[Any] | str:
+        return await asyncio.to_thread(self._request, "PATCH", path, body, False, None)
+
     async def delete(self, path: str) -> None:
         await asyncio.to_thread(self._request, "DELETE", path, None, False, None)
 
@@ -322,6 +325,8 @@ class ClientApiRequest(BaseModel):
     operation: str
     endpoint_id: str | None = None
     node_id: str | None = None
+    node_ids: list[str] = []
+    enabled: bool | None = None
     value: Any = None
     max_depth: int = 1
     include_variables: bool = True
@@ -672,6 +677,18 @@ async def _execute_client_operation(payload: ClientApiRequest) -> dict[str, Any]
     if operation == "reconnect":
         endpoint_id = _require_field(payload.endpoint_id, "endpoint_id")
         return await client_api.post(f"/connections/{endpoint_id}/reconnect", {})
+    if operation == "set_nodes_enabled":
+        if not payload.node_ids:
+            raise HTTPException(status_code=422, detail="node_ids is required")
+        if payload.enabled is None:
+            raise HTTPException(status_code=422, detail="enabled is required")
+        return await client_api.patch(
+            "/config/nodes/enabled",
+            {
+                "node_ids": payload.node_ids,
+                "enabled": payload.enabled,
+            },
+        )
     raise HTTPException(status_code=404, detail=f"Unsupported operation: {operation}")
 
 
@@ -717,10 +734,12 @@ async def _build_nodes_snapshot(subscriptions: list[Any]) -> list[dict[str, Any]
                 except Exception as exc:
                     read_error = str(exc)
         return {
+            "config_id": item.get("config_id"),
             "endpoint_id": item.get("endpoint_id"),
             "node_id": item.get("node_id"),
             "parameter_code": item.get("parameter_code"),
             "acquisition_mode": item.get("acquisition_mode"),
+            "enabled": item.get("enabled", True),
             "status": item,
             "read": read_result,
             "read_error": read_error,

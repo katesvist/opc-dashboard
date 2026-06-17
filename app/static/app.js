@@ -19,11 +19,14 @@ const state = {
   activePage: "dashboard",
   snapshotLoading: false,
   publishAuditPage: 1,
+  nodesPage: 1,
+  selectedMonitoringNodeIds: new Set(),
 };
 
 const GROUP_SUBSCRIBE_MAX_DEPTH = "2";
 const OPC_NODE_DRAG_TYPE = "application/x-opc-node";
 const PUBLISH_AUDIT_PAGE_SIZE = 200;
+const MONITORING_NODES_PAGE_SIZE = 20;
 
 const formatDate = (value) => {
   if (!value) return "-";
@@ -614,36 +617,51 @@ function buildSelectionStatusMessage() {
 
 function renderNodes(nodes) {
   const table = document.getElementById("nodesTable");
-  const query = state.filter.trim().toLowerCase();
-  const visibleNodes = query
-    ? nodes.filter((node) => {
-        const haystack = [
-          node.parameter_code,
-          node.node_id,
-          node.endpoint_id,
-          node.acquisition_mode,
-          node.read?.data_type,
-          String(node.read?.value ?? ""),
-        ].join(" ").toLowerCase();
-        return haystack.includes(query);
-      })
-    : nodes;
+  const visibleNodes = filteredMonitoringNodes(nodes);
+  const totalPages = Math.max(1, Math.ceil(visibleNodes.length / MONITORING_NODES_PAGE_SIZE));
+  state.nodesPage = Math.min(Math.max(1, state.nodesPage), totalPages);
+  const start = (state.nodesPage - 1) * MONITORING_NODES_PAGE_SIZE;
+  const pageNodes = visibleNodes.slice(start, start + MONITORING_NODES_PAGE_SIZE);
+  const selectedCount = state.selectedMonitoringNodeIds.size;
+
+  setText(
+    "nodesPageMeta",
+    `${visibleNodes.length} нод · ${selectedCount} выбрано · страница ${pageNodes.length}/${MONITORING_NODES_PAGE_SIZE}`,
+  );
+  setText("nodesPageIndicator", `${state.nodesPage} / ${totalPages}`);
+
+  const prevButton = document.getElementById("nodesPrev");
+  const nextButton = document.getElementById("nodesNext");
+  if (prevButton) prevButton.disabled = state.nodesPage <= 1;
+  if (nextButton) nextButton.disabled = state.nodesPage >= totalPages;
+
+  const selectPage = document.getElementById("nodesSelectPage");
+  if (selectPage) {
+    const selectableIds = pageNodes.map((node) => node.config_id).filter(Boolean);
+    const selectedOnPage = selectableIds.filter((id) => state.selectedMonitoringNodeIds.has(id)).length;
+    selectPage.checked = selectableIds.length > 0 && selectedOnPage === selectableIds.length;
+    selectPage.indeterminate = selectedOnPage > 0 && selectedOnPage < selectableIds.length;
+  }
 
   table.innerHTML = "";
-  if (!visibleNodes.length) {
-    table.innerHTML = `<tr><td colspan="8" class="muted">Ноды не найдены.</td></tr>`;
+  if (!pageNodes.length) {
+    table.innerHTML = `<tr><td colspan="11" class="muted">Ноды не найдены.</td></tr>`;
     return;
   }
 
-  for (const node of visibleNodes) {
+  for (const node of pageNodes) {
     const s = node.status;
     const read = node.read;
     const active = Boolean(s?.active);
+    const enabled = node.enabled !== false;
     const quality = read?.status_code || "-";
     const qualityOk = quality === "Good" || quality === "-";
     const row = document.createElement("tr");
+    row.dataset.configId = node.config_id || "";
     row.innerHTML = `
+      <td class="nt-select"><input class="node-select" type="checkbox" ${state.selectedMonitoringNodeIds.has(node.config_id) ? "checked" : ""} ${node.config_id ? "" : "disabled"} /></td>
       <td class="nt-status"><span class="badge ${active ? "badge-ok" : "badge-muted"}">${active ? "active" : "inactive"}</span></td>
+      <td class="nt-enabled"><span class="badge ${enabled ? "badge-ok" : "badge-muted"}">${enabled ? "enabled" : "disabled"}</span></td>
       <td class="nt-param">${escapeHtml(node.parameter_code || "-")}</td>
       <td class="nt-value"><span class="nt-val-text">${escapeHtml(formatValue(read?.value))}</span>${node.read_error ? `<div class="nt-err">${escapeHtml(node.read_error)}</div>` : ""}</td>
       <td class="nt-quality ${qualityOk ? "" : "nt-quality-bad"}">${escapeHtml(quality)}</td>
@@ -651,14 +669,88 @@ function renderNodes(nodes) {
       <td class="nt-nodeid" title="${escapeHtml(node.node_id || "")}"><code>${escapeHtml(node.node_id || "-")}</code></td>
       <td class="nt-endpoint" title="${escapeHtml(node.endpoint_id || "")}">${escapeHtml(node.endpoint_id || "-")}</td>
       <td class="nt-mode">${escapeHtml(node.acquisition_mode || "-")}</td>
+      <td class="nt-action"><button class="btn compact secondary toggle-node-enabled" type="button" ${node.config_id ? "" : "disabled"}>${enabled ? "Деактивировать" : "Активировать"}</button></td>
     `;
-    row.addEventListener("click", () => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("input, button")) return;
       document.getElementById("apiEndpoint").value = node.endpoint_id || "";
       document.getElementById("apiNodeId").value = node.node_id || "";
+    });
+    row.querySelector(".node-select")?.addEventListener("change", (event) => {
+      if (!node.config_id) return;
+      if (event.target.checked) {
+        state.selectedMonitoringNodeIds.add(node.config_id);
+      } else {
+        state.selectedMonitoringNodeIds.delete(node.config_id);
+      }
+      renderNodes(state.snapshot?.nodes || []);
+    });
+    row.querySelector(".toggle-node-enabled")?.addEventListener("click", (event) => {
+      updateNodesEnabled([node.config_id], !enabled, event.currentTarget).catch((error) => showApiError(error));
     });
     row.title = "Нажмите, чтобы подставить endpoint и node_id в форму API.";
     table.append(row);
   }
+}
+
+function filteredMonitoringNodes(nodes) {
+  const query = state.filter.trim().toLowerCase();
+  if (!query) return nodes;
+  return nodes.filter((node) => {
+    const haystack = [
+      node.parameter_code,
+      node.node_id,
+      node.endpoint_id,
+      node.acquisition_mode,
+      node.enabled === false ? "disabled" : "enabled",
+      node.read?.data_type,
+      String(node.read?.value ?? ""),
+    ].join(" ").toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+function currentMonitoringPageNodes() {
+  const nodes = state.snapshot?.nodes || [];
+  const visibleNodes = filteredMonitoringNodes(nodes);
+  const totalPages = Math.max(1, Math.ceil(visibleNodes.length / MONITORING_NODES_PAGE_SIZE));
+  state.nodesPage = Math.min(Math.max(1, state.nodesPage), totalPages);
+  const start = (state.nodesPage - 1) * MONITORING_NODES_PAGE_SIZE;
+  return visibleNodes.slice(start, start + MONITORING_NODES_PAGE_SIZE);
+}
+
+async function updateSelectedNodesEnabled(enabled, button) {
+  const ids = [...state.selectedMonitoringNodeIds];
+  if (!ids.length) {
+    showApiError(new Error("Выберите хотя бы одну ноду."));
+    return;
+  }
+  await updateNodesEnabled(ids, enabled, button);
+}
+
+async function updateNodesEnabled(nodeIds, enabled, button) {
+  const ids = nodeIds.filter(Boolean);
+  if (!ids.length) return;
+  await withBusy(button, async () => {
+    await fetchJson("/api/client/request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operation: "set_nodes_enabled",
+        node_ids: ids,
+        enabled,
+      }),
+    });
+    for (const id of ids) {
+      state.selectedMonitoringNodeIds.delete(id);
+    }
+    await fetchSnapshot();
+  });
+}
+
+function showApiError(error) {
+  const result = document.getElementById("apiResult");
+  if (result) result.textContent = error.message;
 }
 
 function switchPage(page) {
@@ -1570,7 +1662,34 @@ for (const button of document.querySelectorAll("[data-page-target]")) {
 }
 document.getElementById("nodeFilter").addEventListener("input", (event) => {
   state.filter = event.target.value;
+  state.nodesPage = 1;
   if (state.snapshot) renderNodes(state.snapshot.nodes);
+});
+document.getElementById("nodesPrev")?.addEventListener("click", () => {
+  state.nodesPage = Math.max(1, state.nodesPage - 1);
+  if (state.snapshot) renderNodes(state.snapshot.nodes);
+});
+document.getElementById("nodesNext")?.addEventListener("click", () => {
+  state.nodesPage += 1;
+  if (state.snapshot) renderNodes(state.snapshot.nodes);
+});
+document.getElementById("nodesSelectPage")?.addEventListener("change", (event) => {
+  const pageNodes = currentMonitoringPageNodes();
+  for (const node of pageNodes) {
+    if (!node.config_id) continue;
+    if (event.target.checked) {
+      state.selectedMonitoringNodeIds.add(node.config_id);
+    } else {
+      state.selectedMonitoringNodeIds.delete(node.config_id);
+    }
+  }
+  if (state.snapshot) renderNodes(state.snapshot.nodes);
+});
+document.getElementById("nodesEnableSelected")?.addEventListener("click", (event) => {
+  updateSelectedNodesEnabled(true, event.currentTarget).catch((error) => showApiError(error));
+});
+document.getElementById("nodesDisableSelected")?.addEventListener("click", (event) => {
+  updateSelectedNodesEnabled(false, event.currentTarget).catch((error) => showApiError(error));
 });
 document.getElementById("publishAuditPrev")?.addEventListener("click", () => {
   state.publishAuditPage = Math.max(1, state.publishAuditPage - 1);
