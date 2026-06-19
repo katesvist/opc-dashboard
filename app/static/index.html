@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OPC UA Client Dashboard</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260617-node-enabled" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260619-diagnostics-audit-window" />
   </head>
   <body>
     <main class="layout">
@@ -25,7 +25,7 @@
         </div>
       </header>
 
-      <section class="summary page-section" data-page="dashboard">
+      <section class="summary summary-dashboard page-section" data-page="dashboard">
         <div class="summary-item">
           <span>Endpoint</span>
           <strong id="endpointCount">0</strong>
@@ -37,7 +37,7 @@
           <small id="activeNodeCount">0 active</small>
         </div>
         <div class="summary-item">
-          <span>Buffer</span>
+          <span>Event buffer</span>
           <strong id="bufferCount">0</strong>
           <small id="deadLetterCount">0 dead-letter</small>
         </div>
@@ -193,7 +193,7 @@
         </div>
       </section>
 
-      <section class="summary page-section hidden" data-page="diagnostics">
+      <section class="summary summary-diagnostics page-section hidden" data-page="diagnostics">
         <div class="summary-item">
           <span>Published</span>
           <strong id="diagPublishedCount">0</strong>
@@ -205,54 +205,44 @@
           <small>подавлено клиентом</small>
         </div>
         <div class="summary-item">
-          <span>Buffered</span>
-          <strong id="diagBufferedCount">0</strong>
-          <small>сохранено в буфер</small>
-        </div>
-        <div class="summary-item">
-          <span>Status alarms</span>
-          <strong id="diagAlarmCount">0</strong>
-          <small id="diagAlarmHint">активных статусов</small>
+          <span>Audit window</span>
+          <strong id="diagAuditWindowCount">0</strong>
+          <small id="diagAuditWindowHint">до 0 записей</small>
         </div>
       </section>
 
       <section class="panel page-section hidden" data-page="diagnostics">
-        <div class="panel-title">
-          <h2>OPC UA status alarms</h2>
+        <div class="panel-title inline-title">
+          <div>
+            <h2>GoodOverload счетчик</h2>
+            <p class="muted">Считает каждое полученное клиентом значение со статусом GoodOverload.</p>
+          </div>
+          <button id="overloadCounterToggle" class="btn compact" type="button">Выключить</button>
         </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Status</th>
-                <th>Severity</th>
-                <th>Nodes</th>
-                <th>Last seen</th>
-                <th>Message</th>
-              </tr>
-            </thead>
-            <tbody id="statusAlarmsTable"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="panel page-section hidden" data-page="diagnostics">
-        <div class="panel-title">
-          <h2>История status alarms</h2>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Action</th>
-                <th>Status</th>
-                <th>At</th>
-                <th>Node</th>
-                <th>Message</th>
-              </tr>
-            </thead>
-            <tbody id="statusAlarmHistoryTable"></tbody>
-          </table>
+        <div class="counter-grid">
+          <div class="counter-card">
+            <span>Статус</span>
+            <strong id="overloadCounterStatus">ON</strong>
+          </div>
+          <div class="counter-card">
+            <span>GoodOverload</span>
+            <strong id="overloadCounterValue">0</strong>
+          </div>
+          <div class="counter-card">
+            <span>Активные ноды</span>
+            <strong id="overloadCounterNodes">0</strong>
+            <small>в текущем подключении</small>
+          </div>
+          <div class="counter-card">
+            <span>Время</span>
+            <strong id="overloadCounterElapsed">0с</strong>
+            <small id="overloadCounterStarted">-</small>
+          </div>
+          <div class="counter-card wide">
+            <span>Последний GoodOverload</span>
+            <strong id="overloadCounterLastSeen">-</strong>
+            <small id="overloadCounterLastNode">-</small>
+          </div>
         </div>
       </section>
 
@@ -484,6 +474,6 @@
         <div id="endpointsList" class="endpoints-list"></div>
       </section>
     </main>
-    <script src="/assets/app.js?v=20260617-node-enabled" defer></script>
+    <script src="/assets/app.js?v=20260619-diagnostics-audit-window" defer></script>
   </body>
 </html>

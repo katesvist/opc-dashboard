@@ -373,8 +373,7 @@ async def snapshot() -> dict[str, Any]:
         capabilities,
         publish_stats,
         publish_audit,
-        status_alarms,
-        status_alarm_history,
+        status_overload_counter,
         connection_events,
         rabbitmq_stats,
     ) = await asyncio.gather(
@@ -388,8 +387,7 @@ async def snapshot() -> dict[str, Any]:
         _safe_client_get("/capabilities", fallback=[]),
         _safe_client_get("/publish/stats", fallback={}),
         _safe_client_get("/publish/audit?limit=1000", fallback=[]),
-        _safe_client_get("/status-alarms", fallback=[]),
-        _safe_client_get("/status-alarms/history?limit=100", fallback=[]),
+        _safe_client_get("/status-overload-counter", fallback={}),
         _safe_client_get("/connection-events?limit=100", fallback=[]),
         rabbitmq_api.queue_stats(),
     )
@@ -410,10 +408,8 @@ async def snapshot() -> dict[str, Any]:
         publish_stats = {}
     if not isinstance(publish_audit, list):
         publish_audit = []
-    if not isinstance(status_alarms, list):
-        status_alarms = []
-    if not isinstance(status_alarm_history, list):
-        status_alarm_history = []
+    if not isinstance(status_overload_counter, dict):
+        status_overload_counter = {}
     if not isinstance(connection_events, list):
         connection_events = []
 
@@ -445,8 +441,7 @@ async def snapshot() -> dict[str, Any]:
         "diagnostics": {
             "publish_stats": publish_stats,
             "publish_audit": publish_audit,
-            "status_alarms": status_alarms,
-            "status_alarm_history": status_alarm_history,
+            "status_overload_counter": status_overload_counter,
             "connection_events": connection_events,
         },
         "rabbitmq": rabbitmq_stats,
@@ -478,8 +473,7 @@ async def operations() -> list[dict[str, Any]]:
         {"id": "dead_letter", "title": "Dead letter", "method": "GET", "path": "/dead-letter", "group": "technical"},
         {"id": "publish_stats", "title": "Publish stats", "method": "GET", "path": "/publish/stats", "group": "technical"},
         {"id": "publish_audit", "title": "Publish audit", "method": "GET", "path": "/publish/audit?limit=1000", "group": "technical"},
-        {"id": "status_alarms", "title": "Status alarms", "method": "GET", "path": "/status-alarms", "group": "technical"},
-        {"id": "status_alarm_history", "title": "Status alarm history", "method": "GET", "path": "/status-alarms/history?limit=100", "group": "technical"},
+        {"id": "status_overload_counter", "title": "GoodOverload counter", "method": "GET", "path": "/status-overload-counter", "group": "technical"},
         {"id": "connection_events", "title": "Connection events", "method": "GET", "path": "/connection-events?limit=100", "group": "technical"},
         {"id": "events", "title": "OPC UA Events", "method": "GET", "path": "/events", "group": "technical"},
         {"id": "alarms", "title": "Alarms & Conditions", "method": "GET", "path": "/alarms", "group": "technical"},
@@ -632,10 +626,12 @@ async def _execute_client_operation(payload: ClientApiRequest) -> dict[str, Any]
         return await client_api.get("/publish/stats")
     if operation == "publish_audit":
         return await client_api.get("/publish/audit?limit=1000")
-    if operation == "status_alarms":
-        return await client_api.get("/status-alarms")
-    if operation == "status_alarm_history":
-        return await client_api.get("/status-alarms/history?limit=100")
+    if operation == "status_overload_counter":
+        return await client_api.get("/status-overload-counter")
+    if operation == "set_status_overload_counter_enabled":
+        if payload.enabled is None:
+            raise HTTPException(status_code=422, detail="enabled is required")
+        return await client_api.put("/status-overload-counter", {"enabled": payload.enabled})
     if operation == "connection_events":
         return await client_api.get("/connection-events?limit=100")
     if operation == "events":

@@ -87,11 +87,19 @@ small {
 
 .summary {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
   border-top: 0;
 }
 
+.summary-dashboard {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.summary-diagnostics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .summary-item {
+  min-width: 0;
   padding: 10px 12px;
   border-right: 1px solid var(--line);
 }
@@ -116,6 +124,10 @@ small {
   line-height: 1;
 }
 
+.summary-item small {
+  overflow-wrap: anywhere;
+}
+
 .panel {
   margin-top: 10px;
   padding: 12px;
@@ -137,6 +149,51 @@ small {
 
 .two-columns {
   display: block;
+}
+
+.counter-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.counter-card {
+  min-width: 0;
+  padding: 10px 12px;
+  border-right: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+
+.counter-card:last-child {
+  border-right: 0;
+}
+
+.counter-card span,
+.counter-card small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.counter-card span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.counter-card strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 4px;
+  font-size: 20px;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .api-grid {
@@ -1873,8 +1930,18 @@ tbody tr:hover {
   .config-toolbar,
   .mapping-layout,
   .endpoint-form-fields,
-  .ef-auth-subfields {
+  .ef-auth-subfields,
+  .counter-grid {
     grid-template-columns: 1fr;
+  }
+
+  .counter-card {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .counter-card:last-child {
+    border-bottom: 0;
   }
 
   .endpoint-card-header {

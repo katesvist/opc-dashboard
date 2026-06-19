@@ -21,6 +21,7 @@ const state = {
   publishAuditPage: 1,
   nodesPage: 1,
   selectedMonitoringNodeIds: new Set(),
+  overloadCounterStartedAt: null,
 };
 
 const GROUP_SUBSCRIBE_MAX_DEPTH = "2";
@@ -49,6 +50,16 @@ const formatDurationUntil = (value) => {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}ч ${String(minutes).padStart(2, "0")}м`;
+  if (minutes > 0) return `${minutes}м ${String(seconds).padStart(2, "0")}с`;
+  return `${seconds}с`;
+};
+
+const formatElapsedSeconds = (value) => {
+  const totalSeconds = Math.max(0, Number(value) || 0);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = Math.floor(totalSeconds % 60);
   if (hours > 0) return `${hours}ч ${String(minutes).padStart(2, "0")}м`;
   if (minutes > 0) return `${minutes}м ${String(seconds).padStart(2, "0")}с`;
   return `${seconds}с`;
@@ -462,42 +473,50 @@ function severityBadge(severity) {
 function renderDiagnostics(diagnostics) {
   const publishStats = diagnostics.publish_stats || {};
   const decisions = publishStats.decisions || {};
-  const alarms = Array.isArray(diagnostics.status_alarms) ? diagnostics.status_alarms : [];
+  const overloadCounter = diagnostics.status_overload_counter || {};
   const audit = Array.isArray(diagnostics.publish_audit) ? diagnostics.publish_audit : [];
-  const history = Array.isArray(diagnostics.status_alarm_history) ? diagnostics.status_alarm_history : [];
 
   setText("diagPublishedCount", decisions.published ?? 0);
   setText("diagSuppressedCount", decisions.suppressed ?? 0);
-  setText("diagBufferedCount", decisions.buffered ?? 0);
-  setText("diagAlarmCount", alarms.length);
-  setText("diagAlarmHint", `${alarms.filter((item) => !item.stale).length} активных / ${alarms.filter((item) => item.stale).length} stale`);
+  setText("diagAuditWindowCount", publishStats.window_records ?? audit.length);
+  setText("diagAuditWindowHint", `${publishStats.max_records ?? "-"} max · TTL ${formatElapsedSeconds(publishStats.ttl_seconds ?? 0)}`);
   setText("publishAuditMeta", `${audit.length} записей · окно ${publishStats.window_records ?? 0}/${publishStats.max_records ?? "-"}`);
 
-  renderStatusAlarms(alarms);
+  renderStatusOverloadCounter(overloadCounter);
   renderPublishAudit(audit);
-  renderStatusAlarmHistory(history);
 }
 
-function renderStatusAlarms(alarms) {
-  const table = document.getElementById("statusAlarmsTable");
-  if (!table) return;
-  table.innerHTML = "";
-  if (!alarms.length) {
-    table.innerHTML = `<tr><td colspan="5" class="muted">Активных OPC UA status alarms нет.</td></tr>`;
+function renderStatusOverloadCounter(counter) {
+  const enabled = counter.enabled !== false;
+  state.overloadCounterStartedAt = enabled && counter.started_at ? counter.started_at : null;
+  setText("overloadCounterStatus", enabled ? "ON" : "OFF");
+  setText("overloadCounterValue", enabled ? counter.count ?? 0 : 0);
+  setText("overloadCounterNodes", counter.active_nodes ?? 0);
+  updateStatusOverloadCounterTimer(counter);
+  setText("overloadCounterStarted", enabled ? `с ${formatDate(counter.started_at)}` : "выключен");
+  setText("overloadCounterLastSeen", enabled ? formatDate(counter.last_seen_at) : "-");
+  setText("overloadCounterLastNode", enabled ? counter.last_parameter_code || counter.last_node_id || "-" : "-");
+  const button = document.getElementById("overloadCounterToggle");
+  if (button) {
+    button.textContent = enabled ? "Выключить" : "Включить";
+    button.dataset.enabled = enabled ? "true" : "false";
+    button.classList.toggle("secondary", enabled);
+  }
+}
+
+function updateStatusOverloadCounterTimer(counter = state.snapshot?.diagnostics?.status_overload_counter || {}) {
+  if (counter.enabled === false) {
+    setText("overloadCounterElapsed", "0с");
     return;
   }
-  for (const alarm of alarms) {
-    const row = document.createElement("tr");
-    const statusLabel = `${alarm.status_name || "-"} (${alarm.status_code ?? "-"})`;
-    row.innerHTML = `
-      <td><span class="mono">${escapeHtml(statusLabel)}</span>${alarm.stale ? `<div class="muted">stale</div>` : ""}</td>
-      <td><span class="badge ${severityBadge(alarm.severity)}">${escapeHtml(alarm.severity || "-")}</span></td>
-      <td>${escapeHtml(alarm.affected_nodes ?? 0)}</td>
-      <td>${escapeHtml(formatDate(alarm.last_seen_at))}</td>
-      <td class="node-id">${escapeHtml(alarm.message || alarm.status_text || "-")}</td>
-    `;
-    table.append(row);
+  const startedAt = state.overloadCounterStartedAt || counter.started_at;
+  const started = startedAt ? new Date(startedAt) : null;
+  if (!started || Number.isNaN(started.getTime())) {
+    setText("overloadCounterElapsed", formatElapsedSeconds(counter.elapsed_seconds));
+    return;
   }
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - started.getTime()) / 1000));
+  setText("overloadCounterElapsed", formatElapsedSeconds(elapsedSeconds));
 }
 
 function renderPublishAudit(records) {
@@ -542,28 +561,6 @@ function setPublishAuditPagination(totalRecords, totalPages) {
   if (prev) prev.disabled = state.publishAuditPage <= 1 || totalRecords <= PUBLISH_AUDIT_PAGE_SIZE;
   if (next) next.disabled = state.publishAuditPage >= totalPages || totalRecords <= PUBLISH_AUDIT_PAGE_SIZE;
 }
-
-function renderStatusAlarmHistory(items) {
-  const table = document.getElementById("statusAlarmHistoryTable");
-  if (!table) return;
-  table.innerHTML = "";
-  if (!items.length) {
-    table.innerHTML = `<tr><td colspan="5" class="muted">Истории status alarms пока нет.</td></tr>`;
-    return;
-  }
-  for (const item of items) {
-    const row = document.createElement("tr");
-    row.innerHTML = `
-      <td><span class="badge ${item.action === "raised" ? "badge-warn" : "badge-ok"}">${escapeHtml(item.action || "-")}</span></td>
-      <td class="mono">${escapeHtml(`${item.status_name || "-"} (${item.status_code ?? "-"})`)}</td>
-      <td>${escapeHtml(formatDate(item.at))}</td>
-      <td class="node-id">${escapeHtml(item.parameter_code || item.node_id || "-")}</td>
-      <td class="node-id">${escapeHtml(item.message || "-")}</td>
-    `;
-    table.append(row);
-  }
-}
-
 
 function escapeHtml(value) {
   return String(value)
@@ -744,6 +741,20 @@ async function updateNodesEnabled(nodeIds, enabled, button) {
     for (const id of ids) {
       state.selectedMonitoringNodeIds.delete(id);
     }
+    await fetchSnapshot();
+  });
+}
+
+async function updateStatusOverloadCounterEnabled(enabled, button) {
+  await withBusy(button, async () => {
+    await fetchJson("/api/client/request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operation: "set_status_overload_counter_enabled",
+        enabled,
+      }),
+    });
     await fetchSnapshot();
   });
 }
@@ -1691,6 +1702,10 @@ document.getElementById("nodesEnableSelected")?.addEventListener("click", (event
 document.getElementById("nodesDisableSelected")?.addEventListener("click", (event) => {
   updateSelectedNodesEnabled(false, event.currentTarget).catch((error) => showApiError(error));
 });
+document.getElementById("overloadCounterToggle")?.addEventListener("click", (event) => {
+  const enabledNow = event.currentTarget.dataset.enabled === "true";
+  updateStatusOverloadCounterEnabled(!enabledNow, event.currentTarget).catch((error) => showApiError(error));
+});
 document.getElementById("publishAuditPrev")?.addEventListener("click", () => {
   state.publishAuditPage = Math.max(1, state.publishAuditPage - 1);
   renderPublishAudit(state.snapshot?.diagnostics?.publish_audit || []);
@@ -2046,6 +2061,11 @@ document.getElementById("efAuthMode").addEventListener("change", (event) => {
 });
 
 setInterval(() => {
-  if (state.activePage !== "dashboard") return;
+  if (!["dashboard", "diagnostics"].includes(state.activePage)) return;
   fetchSnapshot().catch(() => undefined);
 }, 5000);
+
+setInterval(() => {
+  if (state.activePage !== "diagnostics") return;
+  updateStatusOverloadCounterTimer();
+}, 1000);
