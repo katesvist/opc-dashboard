@@ -506,7 +506,7 @@ function renderDiagnostics(diagnostics) {
 }
 
 function renderStatusOverloadCounter(counter) {
-  const enabled = counter.enabled !== false;
+  const enabled = counter.enabled === true;
   state.overloadCounterEnabled = enabled;
   state.overloadCounterStartedAtMs = resolveOverloadCounterStartMs(counter, state.overloadCounterStartedAtMs);
   setText("overloadCounterStatus", enabled ? "ON" : "OFF");
@@ -778,7 +778,19 @@ async function updateNodesEnabled(nodeIds, enabled, button) {
 
 async function updateStatusOverloadCounterEnabled(enabled, button) {
   await withBusy(button, async () => {
-    await fetchJson("/api/client/request", {
+    const currentCounter = state.snapshot?.diagnostics?.status_overload_counter || {};
+    renderStatusOverloadCounter({
+      ...currentCounter,
+      enabled,
+      count: enabled ? 0 : currentCounter.count,
+      started_at: enabled ? new Date().toISOString() : null,
+      elapsed_seconds: 0,
+      last_seen_at: null,
+      last_node_id: null,
+      last_parameter_code: null,
+    });
+
+    const result = await fetchJson("/api/client/request", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -786,7 +798,15 @@ async function updateStatusOverloadCounterEnabled(enabled, button) {
         enabled,
       }),
     });
-    await fetchSnapshot();
+
+    if (!result.ok) {
+      throw new Error(pretty(result.response || "Не удалось переключить счетчик."));
+    }
+
+    renderStatusOverloadCounter(result.response || {});
+    if (state.snapshot?.diagnostics) {
+      state.snapshot.diagnostics.status_overload_counter = result.response || {};
+    }
   });
 }
 
