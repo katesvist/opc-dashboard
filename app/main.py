@@ -492,6 +492,11 @@ async def operations() -> list[dict[str, Any]]:
     ]
 
 
+@app.get("/api/status-overload-counter")
+async def status_overload_counter() -> dict[str, Any] | list[Any] | str:
+    return await client_api.get("/status-overload-counter")
+
+
 @app.get("/api/config/nodes")
 async def config_nodes() -> dict[str, Any]:
     try:

@@ -18,10 +18,12 @@ const state = {
   pendingConfigChanges: false,
   activePage: "dashboard",
   snapshotLoading: false,
+  overloadCounterLoading: false,
   publishAuditPage: 1,
   nodesPage: 1,
   selectedMonitoringNodeIds: new Set(),
-  overloadCounterStartedAt: null,
+  overloadCounterEnabled: false,
+  overloadCounterStartedAtMs: null,
 };
 
 const GROUP_SUBSCRIBE_MAX_DEPTH = "2";
@@ -140,6 +142,23 @@ async function fetchSnapshot() {
     return state.snapshot;
   } finally {
     state.snapshotLoading = false;
+  }
+}
+
+async function fetchStatusOverloadCounter() {
+  if (state.overloadCounterLoading) return null;
+  state.overloadCounterLoading = true;
+  try {
+    const counter = await fetchJson("/api/status-overload-counter");
+    if (state.snapshot?.diagnostics) {
+      state.snapshot.diagnostics.status_overload_counter = counter;
+    }
+    renderStatusOverloadCounter(counter);
+    return counter;
+  } catch {
+    return null;
+  } finally {
+    state.overloadCounterLoading = false;
   }
 }
 
@@ -488,11 +507,12 @@ function renderDiagnostics(diagnostics) {
 
 function renderStatusOverloadCounter(counter) {
   const enabled = counter.enabled !== false;
-  state.overloadCounterStartedAt = enabled && counter.started_at ? counter.started_at : null;
+  state.overloadCounterEnabled = enabled;
+  state.overloadCounterStartedAtMs = resolveOverloadCounterStartMs(counter, state.overloadCounterStartedAtMs);
   setText("overloadCounterStatus", enabled ? "ON" : "OFF");
   setText("overloadCounterValue", enabled ? counter.count ?? 0 : 0);
   setText("overloadCounterNodes", counter.active_nodes ?? 0);
-  updateStatusOverloadCounterTimer(counter);
+  updateStatusOverloadCounterTimer();
   setText("overloadCounterStarted", enabled ? `с ${formatDate(counter.started_at)}` : "выключен");
   setText("overloadCounterLastSeen", enabled ? formatDate(counter.last_seen_at) : "-");
   setText("overloadCounterLastNode", enabled ? counter.last_parameter_code || counter.last_node_id || "-" : "-");
@@ -504,18 +524,29 @@ function renderStatusOverloadCounter(counter) {
   }
 }
 
-function updateStatusOverloadCounterTimer(counter = state.snapshot?.diagnostics?.status_overload_counter || {}) {
-  if (counter.enabled === false) {
+function resolveOverloadCounterStartMs(counter, currentStartMs) {
+  if (counter.enabled === false) return null;
+  if (counter.started_at) {
+    const started = new Date(counter.started_at);
+    if (!Number.isNaN(started.getTime())) return started.getTime();
+  }
+  if (currentStartMs) return currentStartMs;
+  if (counter.elapsed_seconds !== undefined && counter.elapsed_seconds !== null) {
+    return Date.now() - Math.max(0, Number(counter.elapsed_seconds) || 0) * 1000;
+  }
+  return null;
+}
+
+function updateStatusOverloadCounterTimer() {
+  if (!state.overloadCounterEnabled) {
     setText("overloadCounterElapsed", "0с");
     return;
   }
-  const startedAt = state.overloadCounterStartedAt || counter.started_at;
-  const started = startedAt ? new Date(startedAt) : null;
-  if (!started || Number.isNaN(started.getTime())) {
-    setText("overloadCounterElapsed", formatElapsedSeconds(counter.elapsed_seconds));
+  if (!state.overloadCounterStartedAtMs) {
+    setText("overloadCounterElapsed", "-");
     return;
   }
-  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - started.getTime()) / 1000));
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - state.overloadCounterStartedAtMs) / 1000));
   setText("overloadCounterElapsed", formatElapsedSeconds(elapsedSeconds));
 }
 
@@ -2067,5 +2098,9 @@ setInterval(() => {
 
 setInterval(() => {
   if (state.activePage !== "diagnostics") return;
+  fetchStatusOverloadCounter();
+}, 1000);
+
+setInterval(() => {
   updateStatusOverloadCounterTimer();
 }, 1000);
