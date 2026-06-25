@@ -845,6 +845,11 @@ async function loadConfigurationPage() {
   if (dictionaryResult.status === "fulfilled") {
     state.dictionary = Array.isArray(dictionaryResult.value.params) ? dictionaryResult.value.params : [];
     messages.push(`Справочник параметров: ${state.dictionary.length} параметров`);
+    const pagination = dictionaryResult.value.params_pagination;
+    if (pagination && Array.isArray(pagination.pages)) {
+      const pages = pagination.pages.map((page) => `${page.offset}:${page.count}`).join(", ");
+      messages.push(`Страницы справочника: ${pages || "-"}`);
+    }
     messages.push(`Сервис параметров: ${dictionaryResult.value.base_url || state.snapshot?.client?.params_service_base_url || "-"}`);
   } else {
     messages.push(`Справочник не загружен: ${dictionaryResult.reason.message}`);

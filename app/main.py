@@ -245,11 +245,12 @@ class ParamsServiceApi:
         self.settings = settings
 
     async def dictionary_snapshot(self) -> dict[str, Any]:
-        params, datatypes, units = await asyncio.gather(
-            self._fetch_paged("/api/v1/dict/params"),
+        params_page, datatypes, units = await asyncio.gather(
+            self._fetch_paged_with_meta("/api/v1/dict/params"),
             self._get("/api/v1/dict/datatypes"),
             self._get("/api/v1/dict/units"),
         )
+        params = params_page["items"]
         datatype_by_id = {item["id"]: item for item in datatypes if isinstance(item, dict)}
         unit_by_id = {item["id"]: item for item in units if isinstance(item, dict)}
         enriched_params = []
@@ -271,21 +272,38 @@ class ParamsServiceApi:
         return {
             "base_url": self.settings.params_service_base_url,
             "params": enriched_params,
+            "params_pagination": {
+                "page_size": params_page["page_size"],
+                "pages": params_page["pages"],
+                "total_loaded": len(enriched_params),
+                "complete": True,
+            },
             "datatypes": datatypes if isinstance(datatypes, list) else [],
             "units": units if isinstance(units, list) else [],
         }
 
-    async def _fetch_paged(self, path: str, *, page_size: int = 1000) -> list[Any]:
+    async def _fetch_paged_with_meta(self, path: str, *, page_size: int = 1000) -> dict[str, Any]:
         items: list[Any] = []
+        pages: list[dict[str, int]] = []
         offset = 0
         while True:
             separator = "&" if "?" in path else "?"
             page = await self._get(f"{path}{separator}limit={page_size}&offset={offset}")
             if not isinstance(page, list):
-                return items
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "message": "Params service returned an unexpected dictionary page format.",
+                        "path": path,
+                        "offset": offset,
+                        "loaded": len(items),
+                        "response_type": type(page).__name__,
+                    },
+                )
             items.extend(page)
+            pages.append({"offset": offset, "count": len(page)})
             if len(page) < page_size:
-                return items
+                return {"items": items, "page_size": page_size, "pages": pages}
             offset += page_size
 
     async def _get(self, path: str) -> dict[str, Any] | list[Any] | str:
