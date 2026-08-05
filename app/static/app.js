@@ -1110,7 +1110,7 @@ function addBrowseNodeToDraft(browseNode, param, groupData, options = {}) {
     value_shape: "scalar",
     unit: param?.unit_symbol || param?.unit_name || null,
     group_id: groupData?.group_id || null,
-    group_path: groupData?.group_path || null,
+    group_path: groupData?.group_path || [],
     group_display_name: groupData?.group_display_name || null,
     value_transform: { scale_factor: 1, offset: 0, target_unit: param?.unit_symbol || param?.unit_name || null },
     input_control: { stale_after_seconds: 30, suppress_duplicates: false },
@@ -1660,10 +1660,14 @@ async function saveConfiguration() {
     return;
   }
 
+  const nodesToSave = state.draftNodes.map((node) => ({
+    ...node,
+    group_path: Array.isArray(node.group_path) ? node.group_path : [],
+  }));
   const response = await fetchJson("/api/config/nodes", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ nodes: state.draftNodes }),
+    body: JSON.stringify({ nodes: nodesToSave }),
   });
   state.configNodes = Array.isArray(response.nodes) ? response.nodes : state.draftNodes;
   state.draftNodes = clone(state.configNodes);
