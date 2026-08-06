@@ -160,6 +160,24 @@ def test_bindings_export_and_import_are_scoped_to_selected_endpoint() -> None:
     assert "new URLSearchParams({ endpoint_id: selectedEndpoint })" in import_block
 
 
+def test_workspace_waits_for_endpoint_before_rendering_nodes() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    render = source[source.index("function renderMappings") : source.index("async function saveConfiguration")]
+    endpoint_options = source[source.index("function renderEndpointOptions") : source.index("function renderOperations")]
+
+    endpoint_guard = render.index("if (!currentEndpoint)")
+    endpoint_filter = render.index(
+        "state.draftNodes.filter((node) => node.endpoint_id === currentEndpoint)"
+    )
+    assert endpoint_guard < endpoint_filter
+    assert ": state.draftNodes" not in render[:endpoint_filter]
+    assert "Рабочая область появится после выбора endpoint." in render
+    assert "configEndpointChanged" in endpoint_options
+    assert "resetConfigBrowseStateForEndpointChange();" in endpoint_options
+    assert "renderMappings();" in endpoint_options
+    assert 'document.getElementById("configEndpoint")?.addEventListener("change"' in source
+
+
 def test_group_nodes_are_created_from_node_id_not_browse_name() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     block = source[source.index("function addBrowseNodeToDraft") : source.index("function addGroupFromItems")]

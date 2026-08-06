@@ -315,9 +315,11 @@ function render() {
 }
 
 function renderEndpointOptions(connections) {
+  let configEndpointChanged = false;
   for (const id of ["apiEndpoint", "configEndpoint"]) {
     const select = document.getElementById(id);
     const current = select.value;
+    const availableEndpointIds = new Set(connections.map((connection) => connection.endpoint_id));
     select.innerHTML = "";
     for (const connection of connections) {
       const option = document.createElement("option");
@@ -325,8 +327,23 @@ function renderEndpointOptions(connections) {
       option.textContent = connection.endpoint_id;
       select.append(option);
     }
-    if (current) select.value = current;
+    if (current && availableEndpointIds.has(current)) select.value = current;
+    if (id === "configEndpoint" && select.value !== current) configEndpointChanged = true;
   }
+  if (configEndpointChanged) {
+    resetConfigBrowseStateForEndpointChange();
+    renderMappings();
+  }
+}
+
+function resetConfigBrowseStateForEndpointChange() {
+  state.configBrowseItems = [];
+  state.configBrowseExpanded = new Set();
+  state.configBrowseLoadedNodes = new Set();
+  clearConfigSelection();
+  setText("configBrowseMeta", "Нет данных");
+  renderConfigBrowseTree();
+  renderSelectionBridge();
 }
 
 function renderOperations() {
@@ -1824,9 +1841,12 @@ function renderMappings() {
   const dictCodes = new Set(state.dictionary.map((p) => p.name));
   const savedById = new Map(state.configNodes.map((item) => [item.id, item]));
   const currentEndpoint = document.getElementById("configEndpoint")?.value || "";
-  const endpointNodes = currentEndpoint
-    ? state.draftNodes.filter((n) => n.endpoint_id === currentEndpoint)
-    : state.draftNodes;
+  if (!currentEndpoint) {
+    setText("mappingMeta", "Endpoint не выбран");
+    root.innerHTML = '<tr><td colspan="6" class="ua-table-empty">Рабочая область появится после выбора endpoint.</td></tr>';
+    return;
+  }
+  const endpointNodes = state.draftNodes.filter((node) => node.endpoint_id === currentEndpoint);
 
   setText("mappingMeta", `${endpointNodes.length} нод`);
 
@@ -2660,8 +2680,8 @@ document.getElementById("bindSelectionButton")?.addEventListener("click", () => 
 
 // Re-render working area when endpoint selection changes
 document.getElementById("configEndpoint")?.addEventListener("change", () => {
+  resetConfigBrowseStateForEndpointChange();
   renderMappings();
-  renderConfigBrowseTree();
 });
 
 // Tree search
