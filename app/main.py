@@ -13,10 +13,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+from app.bindings_table import BindingTableError, export_bindings_xlsx, import_bindings_table
 
 
 BASE_DIR = Path(__file__).parent
@@ -533,6 +535,40 @@ async def replace_config_nodes(payload: dict[str, Any]) -> dict[str, Any] | list
         return await client_api.put("/config/nodes", {"nodes": nodes})
     except HTTPException as exc:
         raise HTTPException(status_code=exc.status_code, detail=_unwrap_detail(exc.detail)) from exc
+
+
+@app.get("/api/config/bindings/template")
+async def bindings_template() -> FileResponse:
+    return FileResponse(
+        STATIC_DIR / "opcua-bindings-template.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="opcua-bindings-template.xlsx",
+    )
+
+
+@app.post("/api/config/bindings/export")
+async def export_bindings(payload: dict[str, Any]) -> Response:
+    nodes = payload.get("nodes")
+    if not isinstance(nodes, list):
+        raise HTTPException(status_code=422, detail="nodes list is required")
+    if len(nodes) > 20_000:
+        raise HTTPException(status_code=422, detail="Too many nodes for one export (maximum 20000).")
+    content = await asyncio.to_thread(export_bindings_xlsx, nodes)
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="opcua-bindings-{timestamp}.xlsx"'},
+    )
+
+
+@app.post("/api/config/bindings/import")
+async def import_bindings(file: UploadFile = File(...)) -> dict[str, Any]:
+    content = await file.read(10 * 1024 * 1024 + 1)
+    try:
+        return await asyncio.to_thread(import_bindings_table, file.filename or "bindings.xlsx", content)
+    except BindingTableError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/config/endpoints")

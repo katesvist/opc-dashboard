@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OPC UA Client Dashboard</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260619-counter-instant-start" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260806-sources-modal-1" />
   </head>
   <body>
     <main class="layout">
@@ -14,7 +14,7 @@
           <p id="clientUrl">client api</p>
         </div>
         <div class="topbar-actions">
-          <button class="nav-button active" data-page-target="dashboard" type="button">Мониторинг</button>
+          <button class="nav-button active" data-page-target="dashboard" type="button" aria-current="page">Мониторинг</button>
           <button class="nav-button" data-page-target="diagnostics" type="button">Диагностика</button>
           <button class="nav-button" data-page-target="config" type="button">Конфигурация</button>
           <button class="nav-button" data-page-target="sources" type="button">Источники</button>
@@ -285,12 +285,16 @@
           </div>
           <div class="topbar-actions">
             <button id="loadConfigButton" class="btn" type="button">Обновить данные</button>
+            <button id="bindingsTemplateButton" class="btn secondary" type="button">Шаблон XLSX</button>
+            <button id="bindingsImportButton" class="btn secondary" type="button">Импорт</button>
+            <button id="bindingsExportButton" class="btn secondary" type="button">Экспорт</button>
             <button id="saveConfigButton" class="btn primary" type="button">Сохранить в клиент</button>
+            <input id="bindingsFileInput" type="file" accept=".xlsx,.csv,.tsv,text/csv,text/tab-separated-values" hidden />
           </div>
         </div>
 
         <section class="config-workbench">
-          <div id="configStatus" class="config-status tone-info">Данные еще не загружены.</div>
+          <div id="configStatus" class="config-status tone-info" role="status" aria-live="polite">Данные еще не загружены.</div>
           <!--
           <div class="selection-bridge">
             <article id="selectedNodeCard" class="selection-card">
@@ -349,8 +353,8 @@
                     <th class="col-num">#</th>
                     <th class="col-nodeid-h">Node ID</th>
                     <th class="col-param-h">Параметр</th>
-                    <th class="col-mode-h">Mode</th>
-                    <th class="col-type-h">Type</th>
+                    <th class="col-mode-h">Режим</th>
+                    <th class="col-type-h">Тип</th>
                     <th class="col-del"></th>
                   </tr>
                 </thead>
@@ -363,11 +367,11 @@
       </section>
 
       <div id="dictModalOverlay" class="dict-modal-overlay hidden">
-        <div class="dict-modal">
+        <div class="dict-modal" role="dialog" aria-modal="true" aria-labelledby="dictModalTitle">
           <div class="dict-modal-header">
-            <span class="dict-modal-title">Справочник параметров</span>
+            <span id="dictModalTitle" class="dict-modal-title">Справочник параметров</span>
             <span id="dictMeta" class="muted"></span>
-            <button type="button" id="dictModalClose" class="ua-del-btn" title="Закрыть">×</button>
+            <button type="button" id="dictModalClose" class="ua-del-btn" title="Закрыть" aria-label="Закрыть окно выбора параметра">×</button>
           </div>
           <div class="dict-modal-search">
             <input id="dictFilter" type="search" placeholder="Фильтр: код, описание, тип..." />
@@ -386,94 +390,134 @@
             <button id="createEndpointButton" class="btn primary" type="button">+ Добавить источник</button>
           </div>
         </div>
-        <div id="sourcesStatus" class="config-status tone-info hidden"></div>
-        <div id="endpointFormWrap" class="endpoint-form-wrap hidden">
-          <form id="endpointForm" class="endpoint-form" novalidate>
-            <div class="endpoint-form-title">
-              <h3 id="endpointFormTitle">Новый источник</h3>
-              <button type="button" id="cancelEndpointForm" class="btn">Отмена</button>
-            </div>
-            <div class="endpoint-form-fields">
-              <label>
-                ID
-                <input id="efId" type="text" placeholder="server-1" />
-                <small>Уникальный ID, напр. rig-01</small>
-              </label>
-              <label>
-                URL
-                <input id="efUrl" type="text" placeholder="opc.tcp://192.168.1.100:4840" />
-                <small>opc.tcp://&lt;IP&gt;:4840 — стандартный порт 4840</small>
-              </label>
-              <label class="label-checkbox">
-                <input id="efEnabled" type="checkbox" checked />
-                Включен
-              </label>
-              <label>
-                Аутентификация
-                <select id="efAuthMode">
-                  <option value="anonymous">Anonymous</option>
-                  <option value="username_password">Пользователь / пароль</option>
-                </select>
-              </label>
-              <div id="efAuthFields" class="hidden ef-auth-subfields">
-                <label>
-                  Имя пользователя
-                  <input id="efUsername" type="text" />
-                </label>
-                <label>
-                  Пароль
-                  <input id="efPassword" type="password" placeholder="Оставьте пустым, чтобы не менять" />
-                </label>
-              </div>
-              <details class="endpoint-form-section">
-                <summary>Метаданные</summary>
-                <div class="endpoint-form-fields ef-meta-fields">
-                  <label>
-                    <span>Source ID</span>
-                    <input id="efSourceId" type="text" placeholder="rig-01" />
-                    <small>ID источника в платформе</small>
-                  </label>
-                  <label>
-                    <span>Owner type</span>
-                    <input id="efOwnerType" type="text" placeholder="rig" />
-                    <small>rig / well / pad / platform</small>
-                  </label>
-                  <label>
-                    <span>Owner ID</span>
-                    <input id="efOwnerId" type="text" placeholder="rig-01" />
-                    <small>ID объекта, напр. rig-01</small>
-                  </label>
-                  <label>
-                    Source system ID
-                    <input id="efSourceSystemId" type="text" placeholder="scada-main" />
-                    <small>Имя SCADA-системы</small>
-                  </label>
-                  <label>
-                    Site ID
-                    <input id="efSiteId" type="text" placeholder="pad-a" />
-                    <small>Куст / площадка</small>
-                  </label>
-                  <label>
-                    Asset ID
-                    <input id="efAssetId" type="text" placeholder="pump-01" />
-                    <small>Агрегат, напр. pump-01</small>
-                  </label>
-                  <label>
-                    Well ID
-                    <input id="efWellId" type="text" placeholder="well-007" />
-                    <small>ID скважины</small>
-                  </label>
-                </div>
-              </details>
-            </div>
-            <div class="endpoint-form-actions">
-              <button type="submit" id="submitEndpointForm" class="btn primary">Сохранить</button>
-            </div>
-          </form>
-        </div>
+        <div id="sourcesStatus" class="config-status tone-info hidden" role="status" aria-live="polite"></div>
         <div id="endpointsList" class="endpoints-list"></div>
+        <div id="endpointFormWrap" class="endpoint-modal-backdrop hidden">
+          <div class="endpoint-modal" role="dialog" aria-modal="true" aria-labelledby="endpointFormTitle" aria-describedby="endpointFormHint">
+            <form id="endpointForm" class="endpoint-form" novalidate>
+              <header class="endpoint-modal-header">
+                <div>
+                  <h3 id="endpointFormTitle">Новое подключение</h3>
+                  <p id="endpointFormHint">Настройте соединение с OPC UA сервером.</p>
+                </div>
+                <button type="button" id="closeEndpointForm" class="endpoint-modal-close" aria-label="Закрыть окно">×</button>
+              </header>
+              <div class="endpoint-modal-body">
+                <div id="endpointFormError" class="endpoint-form-error hidden" role="alert"></div>
+
+                <section class="endpoint-modal-section">
+                  <div class="endpoint-section-heading">
+                    <h4>Подключение</h4>
+                    <p>Имя профиля и адрес OPC UA endpoint.</p>
+                  </div>
+                  <div class="endpoint-fields-grid">
+                    <label for="efId">
+                      <span>Имя подключения <span class="required-mark" aria-hidden="true">*</span></span>
+                      <input id="efId" type="text" placeholder="remote-opc-server" autocomplete="off" spellcheck="false" required />
+                      <small>Уникальное имя в конфигурации клиента</small>
+                    </label>
+                    <label class="endpoint-field-wide" for="efUrl">
+                      <span>Endpoint URL <span class="required-mark" aria-hidden="true">*</span></span>
+                      <input id="efUrl" type="text" inputmode="url" placeholder="opc.tcp://192.168.1.100:4840" autocomplete="url" spellcheck="false" required />
+                      <small>Например: opc.tcp://server:4840</small>
+                    </label>
+                    <label class="endpoint-switch-row">
+                      <span><strong>Подключаться автоматически</strong><small>Источник будет активирован сразу после сохранения.</small></span>
+                      <input id="efEnabled" type="checkbox" checked />
+                    </label>
+                  </div>
+                </section>
+
+                <section class="endpoint-modal-section">
+                  <div class="endpoint-section-heading">
+                    <h4>Аутентификация</h4>
+                    <p>Выберите способ входа, опубликованный сервером.</p>
+                  </div>
+                  <div class="endpoint-fields-grid">
+                    <label for="efAuthMode">
+                      Режим
+                      <select id="efAuthMode">
+                        <option value="anonymous">Anonymous</option>
+                        <option value="username_password">Username &amp; Password</option>
+                        <option value="certificate">Certificate</option>
+                      </select>
+                    </label>
+                    <div id="efAuthFields" class="hidden endpoint-subfields endpoint-field-wide">
+                      <label for="efUsername">
+                        <span>Имя пользователя <span class="required-mark" aria-hidden="true">*</span></span>
+                        <input id="efUsername" type="text" autocomplete="username" />
+                      </label>
+                      <label for="efPassword">
+                        <span>Пароль <span id="efPasswordRequired" class="required-mark" aria-hidden="true">*</span></span>
+                        <input id="efPassword" type="password" autocomplete="new-password" />
+                        <small id="efPasswordHint">Обязателен для нового подключения.</small>
+                      </label>
+                    </div>
+                    <div id="efCertificateFields" class="hidden endpoint-subfields endpoint-field-wide">
+                      <label for="efCertificatePath">
+                        <span>Сертификат <span class="required-mark" aria-hidden="true">*</span></span>
+                        <input id="efCertificatePath" type="text" placeholder="/service/certs/client.pem" autocomplete="off" spellcheck="false" />
+                        <small>Путь внутри контейнера OPC UA клиента</small>
+                      </label>
+                      <label for="efPrivateKeyPath">
+                        <span>Закрытый ключ <span class="required-mark" aria-hidden="true">*</span></span>
+                        <input id="efPrivateKeyPath" type="text" placeholder="/service/certs/client-key.pem" autocomplete="off" spellcheck="false" />
+                      </label>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="endpoint-modal-section">
+                  <div class="endpoint-section-heading">
+                    <h4>Безопасность</h4>
+                    <p>Параметры должны совпадать с endpoint сервера.</p>
+                  </div>
+                  <div class="endpoint-fields-grid">
+                    <label for="efSecurityPolicy">
+                      Security policy
+                      <input id="efSecurityPolicy" type="text" list="securityPolicyOptions" value="None" autocomplete="off" spellcheck="false" />
+                      <datalist id="securityPolicyOptions">
+                        <option value="None"></option>
+                        <option value="Basic256Sha256"></option>
+                        <option value="Aes128_Sha256_RsaOaep"></option>
+                        <option value="Aes256_Sha256_RsaPss"></option>
+                      </datalist>
+                    </label>
+                    <label for="efSecurityMode">
+                      Message security mode
+                      <select id="efSecurityMode">
+                        <option value="None">None</option>
+                        <option value="Sign">Sign</option>
+                        <option value="SignAndEncrypt">Sign &amp; Encrypt</option>
+                      </select>
+                    </label>
+                  </div>
+                </section>
+
+                <details class="endpoint-advanced">
+                  <summary>Расширенные настройки</summary>
+                  <div class="endpoint-fields-grid">
+                    <label for="efSessionTimeout">
+                      Session timeout, ms
+                      <input id="efSessionTimeout" type="number" min="1000" step="1000" value="60000" inputmode="numeric" />
+                    </label>
+                    <label for="efRequestTimeout">
+                      Request timeout, s
+                      <input id="efRequestTimeout" type="number" min="0.1" step="0.1" value="10" inputmode="decimal" />
+                    </label>
+                  </div>
+                </details>
+              </div>
+              <footer class="endpoint-modal-footer">
+                <span>Изменение подключения применяется сразу после сохранения.</span>
+                <button type="button" id="cancelEndpointForm" class="btn">Отмена</button>
+                <button type="submit" id="submitEndpointForm" class="btn primary">Сохранить</button>
+              </footer>
+            </form>
+          </div>
+        </div>
       </section>
     </main>
-    <script src="/assets/app.js?v=20260619-counter-instant-start" defer></script>
+    <script src="/assets/app.js?v=20260806-sources-modal-1" defer></script>
   </body>
 </html>

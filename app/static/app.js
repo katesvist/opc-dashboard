@@ -1,3 +1,31 @@
+const PAGE_IDS = ["dashboard", "diagnostics", "config", "sources"];
+const ACTIVE_PAGE_STORAGE_KEY = "opcua-dashboard.active-page";
+
+function normalizedPageId(value) {
+  return PAGE_IDS.includes(value) ? value : "dashboard";
+}
+
+function getInitialPage() {
+  const hashPage = String(window.location.hash || "").replace(/^#/, "");
+  if (PAGE_IDS.includes(hashPage)) return hashPage;
+  try {
+    return normalizedPageId(window.sessionStorage.getItem(ACTIVE_PAGE_STORAGE_KEY));
+  } catch (_) {
+    return "dashboard";
+  }
+}
+
+function persistActivePage(page) {
+  try {
+    window.sessionStorage.setItem(ACTIVE_PAGE_STORAGE_KEY, page);
+  } catch (_) {
+    // The URL hash remains the fallback when storage is unavailable.
+  }
+  if (window.location.hash !== `#${page}`) {
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${page}`);
+  }
+}
+
 const state = {
   snapshot: null,
   operations: [],
@@ -8,15 +36,19 @@ const state = {
   configBrowseExpanded: new Set(),
   configBrowseLoadedNodes: new Set(),
   dictionary: [],
+  dictVisibleLimit: 100,
   configNodes: [],
   draftNodes: [],
   selectedBrowseNode: null,
   selectedDictParamId: null,
   pendingAssignNodeId: null,
   pendingAssignGroupId: null,
+  pendingAssignGroupPath: null,
   workspaceCollapsed: new Set(),
+  workspaceVisibleLimits: new Map(),
+  workspaceUngroupedLimit: 100,
   pendingConfigChanges: false,
-  activePage: "dashboard",
+  activePage: getInitialPage(),
   snapshotLoading: false,
   overloadCounterLoading: false,
   publishAuditPage: 1,
@@ -24,12 +56,16 @@ const state = {
   selectedMonitoringNodeIds: new Set(),
   overloadCounterEnabled: false,
   overloadCounterStartedAtMs: null,
+  modalReturnFocus: null,
 };
 
 const GROUP_SUBSCRIBE_MAX_DEPTH = "2";
 const OPC_NODE_DRAG_TYPE = "application/x-opc-node";
 const PUBLISH_AUDIT_PAGE_SIZE = 200;
 const MONITORING_NODES_PAGE_SIZE = 20;
+const DICTIONARY_PAGE_SIZE = 100;
+const WORKSPACE_PAGE_SIZE = 100;
+let dictionaryFilterTimer = null;
 
 const formatDate = (value) => {
   if (!value) return "-";
@@ -84,10 +120,48 @@ const pretty = (value) => {
   return JSON.stringify(value, null, 2);
 };
 
+function errorMessageFromPayload(payload) {
+  if (typeof payload === "string") {
+    const trimmed = payload.trim();
+    if (!trimmed) return "Пустой ответ сервиса.";
+    try {
+      return errorMessageFromPayload(JSON.parse(trimmed));
+    } catch (_) {
+      return trimmed;
+    }
+  }
+  if (payload && typeof payload === "object") {
+    if (typeof payload.detail === "string") return payload.detail;
+    if (Array.isArray(payload.detail)) {
+      return payload.detail
+        .map((item) => item?.msg || item?.message || pretty(item))
+        .filter(Boolean)
+        .join("; ");
+    }
+    if (typeof payload.message === "string") return payload.message;
+  }
+  return pretty(payload ?? "Неизвестная ошибка.");
+}
+
 const clone = (value) => {
   if (typeof structuredClone === "function") return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
 };
+
+function ensureUniqueNodeConfigIds(nodes) {
+  const seen = new Set();
+  return (Array.isArray(nodes) ? nodes : []).map((node, index) => {
+    let id = String(node.id || "");
+    if (!id || seen.has(id)) {
+      id = makeNodeConfigId(node.endpoint_id, node.node_id || `${index}`, "node");
+    }
+    if (seen.has(id)) {
+      id = makeNodeConfigId(node.endpoint_id, `${node.node_id || "node"}\u0000${index}`, "node");
+    }
+    seen.add(id);
+    return id === node.id ? node : { ...node, id };
+  });
+}
 
 const nodeKey = (endpointId, nodeId) => `${endpointId || ""}\u0000${nodeId || ""}`;
 
@@ -104,6 +178,20 @@ const buildByParent = (items) => {
   return byParent;
 };
 
+function browsePathForNode(browseNode, items = state.configBrowseItems) {
+  if (!browseNode?.node_id) return [];
+  const byId = new Map(items.map((item) => [item.node_id, item]));
+  let current = byId.get(browseNode.node_id) || browseNode;
+  const path = [];
+  const visited = new Set();
+  while (current?.node_id && !visited.has(current.node_id)) {
+    visited.add(current.node_id);
+    path.unshift(current.display_name || current.browse_name || current.node_id);
+    current = current.parent_node_id ? byId.get(current.parent_node_id) : null;
+  }
+  return path;
+}
+
 const buildDictByName = () => {
   const result = new Map();
   for (const param of state.dictionary) {
@@ -113,18 +201,26 @@ const buildDictByName = () => {
   return result;
 };
 
-function setConfigStatus(message, tone = "info") {
+function setConfigStatus(message, tone = "info", action = null) {
   const element = document.getElementById("configStatus");
   if (!element) return;
-  element.textContent = message;
   element.className = `config-status tone-${tone}`;
+  element.replaceChildren(document.createTextNode(message));
+  if (action?.label && typeof action.onClick === "function") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "config-status-action";
+    button.textContent = action.label;
+    button.addEventListener("click", action.onClick, { once: true });
+    element.append(button);
+  }
 }
 
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, { cache: "no-store", ...options });
   const contentType = response.headers.get("content-type") || "";
   const payload = contentType.includes("application/json") ? await response.json() : await response.text();
-  if (!response.ok) throw new Error(pretty(payload));
+  if (!response.ok) throw new Error(errorMessageFromPayload(payload));
   return payload;
 }
 
@@ -166,6 +262,7 @@ function setBusyState(button, busy) {
   if (!button) return;
   button.classList.toggle("is-loading", busy);
   button.disabled = busy;
+  button.setAttribute("aria-busy", busy ? "true" : "false");
 }
 
 async function withBusy(button, work) {
@@ -214,6 +311,7 @@ function render() {
   renderEvents([...(snapshot.alarms || []), ...(snapshot.events || [])]);
   renderDiagnostics(snapshot.diagnostics || {});
   renderNodes(snapshot.nodes);
+  if (state.activePage === "sources" && state.sourcesLoaded) renderSourcesList();
 }
 
 function renderEndpointOptions(connections) {
@@ -602,6 +700,44 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+// Selected Bootstrap Icons are embedded as SVG paths so the dashboard does not
+// depend on a CDN at runtime. Source: https://icons.getbootstrap.com/ (MIT).
+function bootstrapIcon(name, className = "") {
+  const paths = {
+    "folder-open": '<path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h2.764c.958 0 1.76.56 2.311 1.184C7.985 3.648 8.48 4 9 4h4.5A1.5 1.5 0 0 1 15 5.5v.64c.57.265.94.876.856 1.546l-.64 5.124A2.5 2.5 0 0 1 12.733 15H3.266a2.5 2.5 0 0 1-2.481-2.19l-.64-5.124A1.5 1.5 0 0 1 1 6.14zM2 6h12v-.5a.5.5 0 0 0-.5-.5H9c-.964 0-1.71-.629-2.174-1.154C6.374 3.334 5.82 3 5.264 3H2.5a.5.5 0 0 0-.5.5zm-.367 1a.5.5 0 0 0-.496.562l.64 5.124A1.5 1.5 0 0 0 3.266 14h9.468a1.5 1.5 0 0 0 1.489-1.314l.64-5.124A.5.5 0 0 0 14.367 7z"/>',
+    object: '<path d="M8 1.5 14 4.75v6.5L8 14.5l-6-3.25v-6.5zM2.4 4.95 8 8l5.6-3.05M8 8v6.2" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/>',
+    variable: '<path d="m3 4.5 4 7m0-7-4 7M10 5h3m-3 3h3m-3 3h3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>',
+    method: '<rect x="1.5" y="2" width="13" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6 5 3.8 8 6 11m4-6 2.2 3-2.2 3" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>',
+    node: '<circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="8" cy="8" r="1.5"/>',
+    group: '<rect x="1.5" y="2.5" width="8.5" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="6" y="6.5" width="8.5" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/>',
+    "chevron-right": '<path fill-rule="evenodd" d="M6.646 4.646a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-3 3a.5.5 0 0 1-.708-.708L9.293 8 6.646 5.354a.5.5 0 0 1 0-.708"/>',
+    trash: '<path d="M6.5 1h3a.5.5 0 0 1 .5.5v1H6v-1a.5.5 0 0 1 .5-.5M11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3A1.5 1.5 0 0 0 5 1.5v1H1.5a.5.5 0 0 0 0 1h.538l.853 10.66A2 2 0 0 0 4.885 16h6.23a2 2 0 0 0 1.994-1.84l.853-10.66h.538a.5.5 0 0 0 0-1zm1.958 1-.846 10.58a1 1 0 0 1-.997.92h-6.23a1 1 0 0 1-.997-.92L3.042 3.5zm-7.487 1a.5.5 0 0 1 .528.47l.5 8.5a.5.5 0 0 1-.998.06L5 5.03a.5.5 0 0 1 .47-.53Zm5.058 0a.5.5 0 0 1 .47.53l-.5 8.5a.5.5 0 1 1-.998-.06l.5-8.5a.5.5 0 0 1 .528-.47M8 4.5a.5.5 0 0 1 .5.5v8.5a.5.5 0 0 1-1 0V5a.5.5 0 0 1 .5-.5"/>',
+    diagram: '<path fill-rule="evenodd" d="M6 3.5A1.5 1.5 0 0 1 7.5 2h1A1.5 1.5 0 0 1 10 3.5v1A1.5 1.5 0 0 1 8.5 6v1H14a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0V8h-5v.5a.5.5 0 0 1-1 0V8h-5v.5a.5.5 0 0 1-1 0v-1A.5.5 0 0 1 2 7h5.5V6A1.5 1.5 0 0 1 6 4.5zM8.5 5a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5zM0 11.5A1.5 1.5 0 0 1 1.5 10h1A1.5 1.5 0 0 1 4 11.5v1A1.5 1.5 0 0 1 2.5 14h-1A1.5 1.5 0 0 1 0 12.5zm1.5-.5a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5zm4.5.5A1.5 1.5 0 0 1 7.5 10h1a1.5 1.5 0 0 1 1.5 1.5v1A1.5 1.5 0 0 1 8.5 14h-1A1.5 1.5 0 0 1 6 12.5zm1.5-.5a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5zm4.5.5a1.5 1.5 0 0 1 1.5-1.5h1a1.5 1.5 0 0 1 1.5 1.5v1a1.5 1.5 0 0 1-1.5 1.5h-1a1.5 1.5 0 0 1-1.5-1.5zm1.5-.5a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5z"/>',
+  };
+  const path = paths[name];
+  if (!path) return "";
+  return `<svg class="bi-icon ${escapeHtml(className)}" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false">${path}</svg>`;
+}
+
+async function copyTextToClipboard(value) {
+  const text = String(value || "");
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.append(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    textarea.remove();
+    return copied;
+  }
+}
+
 function hasPersistedMappingForParam(paramId) {
   return state.configNodes.some((node) => node.dict_param_id === paramId);
 }
@@ -617,6 +753,12 @@ function isSameBrowseNode(left, right) {
 
 function updatePendingConfigChanges() {
   state.pendingConfigChanges = JSON.stringify(state.draftNodes) !== JSON.stringify(state.configNodes);
+  const saveButton = document.getElementById("saveConfigButton");
+  if (saveButton) {
+    saveButton.classList.toggle("has-pending", state.pendingConfigChanges);
+    saveButton.textContent = state.pendingConfigChanges ? "Сохранить в клиент •" : "Сохранить в клиент";
+    saveButton.title = state.pendingConfigChanges ? "Есть несохранённые изменения" : "Несохранённых изменений нет";
+  }
 }
 
 function clearConfigSelection() {
@@ -624,6 +766,7 @@ function clearConfigSelection() {
   state.selectedDictParamId = null;
   state.pendingAssignNodeId = null;
   state.pendingAssignGroupId = null;
+  state.pendingAssignGroupPath = null;
 }
 
 function buildDraftStatusMessage() {
@@ -815,17 +958,32 @@ function showApiError(error) {
   if (result) result.textContent = error.message;
 }
 
-function switchPage(page) {
-  state.activePage = page;
+function switchPage(page, options = {}) {
+  const activePage = normalizedPageId(page);
+  state.activePage = activePage;
+  if (options.persist !== false) persistActivePage(activePage);
   for (const section of document.querySelectorAll("[data-page]")) {
-    section.classList.toggle("hidden", section.dataset.page !== page);
+    section.classList.toggle("hidden", section.dataset.page !== activePage);
   }
   for (const button of document.querySelectorAll("[data-page-target]")) {
-    button.classList.toggle("active", button.dataset.pageTarget === page);
+    const active = button.dataset.pageTarget === activePage;
+    button.classList.toggle("active", active);
+    if (active) {
+      button.setAttribute("aria-current", "page");
+    } else {
+      button.removeAttribute("aria-current");
+    }
   }
 }
 
-async function loadConfigurationPage() {
+async function loadConfigurationPage(force = false) {
+  if (state.pendingConfigChanges && !force) {
+    setConfigStatus("В рабочей области есть несохранённые изменения. Обновление заменит черновик данными из клиента.", "warn", {
+      label: "Всё равно обновить",
+      onClick: () => loadConfigurationPage(true).catch((error) => setConfigStatus(error.message, "error")),
+    });
+    return;
+  }
   setConfigStatus("Загружаю текущую конфигурацию клиента и справочник параметров...", "info");
   const [configResult, dictionaryResult] = await Promise.allSettled([
     fetchJson("/api/config/nodes"),
@@ -834,7 +992,7 @@ async function loadConfigurationPage() {
 
   const messages = [];
   if (configResult.status === "fulfilled") {
-    state.configNodes = Array.isArray(configResult.value.nodes) ? configResult.value.nodes : [];
+    state.configNodes = ensureUniqueNodeConfigIds(configResult.value.nodes);
     state.draftNodes = clone(state.configNodes);
     updatePendingConfigChanges();
     messages.push(`Конфигурация клиента: ${state.draftNodes.length} нод`);
@@ -857,7 +1015,8 @@ async function loadConfigurationPage() {
 
   messages.push(`OPC UA клиент: ${state.snapshot?.client?.base_url || "-"}`);
   clearConfigSelection();
-  setConfigStatus(messages.join("\n"), configResult.status === "fulfilled" || dictionaryResult.status === "fulfilled" ? "success" : "error");
+  const loadedParts = [configResult, dictionaryResult].filter((result) => result.status === "fulfilled").length;
+  setConfigStatus(messages.join("\n"), loadedParts === 2 ? "success" : loadedParts === 1 ? "warn" : "error");
   renderDictionary();
   renderMappings();
   renderConfigBrowseTree();
@@ -893,8 +1052,7 @@ async function browseForConfig() {
       .map((item) => item.node_id),
   );
 
-  const variableCount = state.configBrowseItems.filter((item) => item.node_class === "Variable").length;
-  setText("configBrowseMeta", `${state.configBrowseItems.length} узлов · ${variableCount} variable`);
+  updateConfigBrowseMeta();
   setConfigStatus(`Верхний уровень загружен: ${state.configBrowseItems.length} узлов. Раскрывайте ветки по мере необходимости.`, "success");
   renderConfigBrowseTree();
 }
@@ -920,6 +1078,13 @@ async function loadConfigNodeChildren(nodeId) {
     }
   }
   state.configBrowseLoadedNodes.add(nodeId);
+  updateConfigBrowseMeta();
+}
+
+function updateConfigBrowseMeta() {
+  const total = state.configBrowseItems.length;
+  const variables = state.configBrowseItems.filter((item) => item.node_class === "Variable").length;
+  setText("configBrowseMeta", `Загружено: ${total} · Variable: ${variables}`);
 }
 
 function getTreeVisibleIds(items, query) {
@@ -980,6 +1145,8 @@ function renderConfigBrowseTree() {
         const expanded = visibleIds ? (children.length > 0) : state.configBrowseExpanded.has(item.node_id);
         const isVariable = item.node_class === "Variable";
         const isObject = item.node_class === "Object";
+        const isMethod = item.node_class === "Method";
+        const nodeKind = isObject ? "object" : isVariable ? "variable" : isMethod ? "method" : "node";
         const inWorkspace = wsNodeIds.has(item.node_id);
         const parentInWs = wsParentIds.has(item.node_id);
         const mapped = persistedNodeKeys.has(nodeKey(endpointId, item.node_id));
@@ -992,23 +1159,30 @@ function renderConfigBrowseTree() {
         const showAllBtn = isObject || (isVariable && expandable);
         const highlight = inWorkspace || parentInWs;
         return `
-          <div class="tree-row" style="padding-left: ${8 + level * 18}px">
+          <div class="tree-row"
+            data-tree-level="${level}" style="--tree-indent: ${level * 20}px; padding-left: ${8 + level * 20}px">
             ${
               expandable
-                ? `<button class="tree-toggle" type="button" data-config-toggle="${escapeHtml(item.node_id)}">${expanded ? "−" : "+"}</button>`
+                ? `<button class="tree-toggle" type="button" data-config-toggle="${escapeHtml(item.node_id)}"
+                    aria-expanded="${expanded ? "true" : "false"}"
+                    aria-label="${expanded ? "Свернуть" : "Раскрыть"} ${escapeHtml(rawLabel)}"><span class="tree-chevron" aria-hidden="true"></span></button>`
                 : `<span class="tree-spacer"></span>`
             }
             <div class="tree-content config-tree-content ${isVariable ? "tree-node-variable" : "tree-content-static"} ${highlight ? "in-workspace" : ""}"
               data-config-node='${nodeJson}'
+              ${isVariable ? `tabindex="0" ${showAllBtn ? "" : `role="button"`} aria-label="Добавить ноду ${escapeHtml(rawLabel)} в рабочую область"` : ""}
               ${isVariable ? `draggable="true" data-drag-node='${nodeJson}'` : ""}>
               <div class="tree-title">
+                <span class="config-tree-node-icon is-${nodeKind}">
+                  ${bootstrapIcon(nodeKind)}
+                </span>
                 <span class="tree-name">${label}</span>
                 <span class="tree-class">${escapeHtml(item.node_class || "")}</span>
                 ${highlight ? `<span class="ws-dot" title="В рабочей области"></span>` : ""}
                 ${mapped ? `<span class="inline-badge">в работе</span>` : ""}
                 ${showAllBtn ? `<button class="group-subscribe-btn" type="button" data-group-subscribe='${nodeJson}' title="Добавить все дочерние Variable-ноды">
-                  <span class="group-subscribe-icon" aria-hidden="true"></span>
-                  <span>все</span>
+                  ${bootstrapIcon("chevron-right", "group-subscribe-icon")}
+                  <span>Добавить ветку</span>
                 </button>` : ""}
               </div>
               <div class="tree-node-id">${escapeHtml(item.node_id)}</div>
@@ -1055,7 +1229,7 @@ function renderConfigBrowseTree() {
   }
 
   for (const element of root.querySelectorAll("[data-config-node]")) {
-    element.addEventListener("click", (event) => {
+    const activateNode = (event) => {
       if (event.target.closest("[data-group-subscribe]")) return;
       const clickedNode = JSON.parse(element.dataset.configNode);
       if (clickedNode.node_class !== "Variable") return;
@@ -1069,6 +1243,13 @@ function renderConfigBrowseTree() {
       } else {
         setConfigStatus("Нода уже в рабочей области.", "info");
       }
+    };
+    element.addEventListener("click", activateNode);
+    element.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      if (event.target.closest("[data-group-subscribe]")) return;
+      event.preventDefault();
+      activateNode(event);
     });
   }
 
@@ -1091,7 +1272,7 @@ function renderConfigBrowseTree() {
 
 function addBrowseNodeToDraft(browseNode, param, groupData, options = {}) {
   const endpointId = browseNode.endpoint_id;
-  const nodeId = makeNodeConfigId(endpointId, param?.name || browseNode.browse_name || browseNode.node_id);
+  const nodeId = makeNodeConfigId(endpointId, browseNode.node_id, "node");
   state.draftNodes.push({
     id: nodeId,
     endpoint_id: endpointId,
@@ -1101,6 +1282,7 @@ function addBrowseNodeToDraft(browseNode, param, groupData, options = {}) {
     dict_param_id: param?.id || null,
     parameter_code: param?.name || null,
     parameter_name: param?.description || param?.name || null,
+    enabled: true,
     acquisition_mode: "subscription",
     read_enabled: true,
     write_enabled: false,
@@ -1118,6 +1300,10 @@ function addBrowseNodeToDraft(browseNode, param, groupData, options = {}) {
       opcua_browse_name: browseNode.browse_name || null,
       opcua_display_name: browseNode.display_name || null,
       opcua_data_type: browseNode.data_type || null,
+      opcua_browse_path: browsePathForNode(browseNode),
+      opcua_group_nodes: Array.isArray(groupData?.group_nodes)
+        ? groupData.group_nodes.map((groupNode) => ({ ...groupNode }))
+        : [],
     },
     tags: [],
   });
@@ -1146,19 +1332,41 @@ function addGroupFromItems(parentNodeId, groupPath, groupData, allItems, endpoin
       if (subChildren.length > 0) {
         const subName = child.browse_name || child.display_name || child.node_id;
         const subPath = [...groupPath, subName];
+        const subGroupNodes = [
+          ...(groupData?.group_nodes || []),
+          {
+            name: subName,
+            node_id: child.node_id,
+            node_class: child.node_class,
+            browse_name: child.browse_name || null,
+            display_name: child.display_name || null,
+          },
+        ];
         addGroupFromItems(child.node_id, subPath, {
           group_id: makeNodeConfigId(endpointId, subPath.join("/")),
           group_path: subPath,
           group_display_name: child.display_name || child.browse_name || child.node_id,
+          group_nodes: subGroupNodes,
         }, allItems, endpointId, ctx);
       }
     } else if (child.node_class === "Object") {
       const subName = child.browse_name || child.display_name || child.node_id;
       const subPath = [...groupPath, subName];
+      const subGroupNodes = [
+        ...(groupData?.group_nodes || []),
+        {
+          name: subName,
+          node_id: child.node_id,
+          node_class: child.node_class,
+          browse_name: child.browse_name || null,
+          display_name: child.display_name || null,
+        },
+      ];
       addGroupFromItems(child.node_id, subPath, {
         group_id: makeNodeConfigId(endpointId, subPath.join("/")),
         group_path: subPath,
         group_display_name: child.display_name || child.browse_name || child.node_id,
+        group_nodes: subGroupNodes,
       }, allItems, endpointId, ctx);
     }
   }
@@ -1187,6 +1395,13 @@ async function groupSubscribeObject(parentNode, button) {
       group_id: groupId,
       group_path: groupPath,
       group_display_name: parentNode.display_name || parentNode.browse_name || parentNode.node_id,
+      group_nodes: [{
+        name: groupPath[0],
+        node_id: parentNode.node_id,
+        node_class: parentNode.node_class,
+        browse_name: parentNode.browse_name || null,
+        display_name: parentNode.display_name || null,
+      }],
     };
     const beforeCount = state.draftNodes.length;
     addGroupFromItems(parentNode.node_id, groupPath, groupData, allItems, endpointId);
@@ -1215,31 +1430,34 @@ async function groupSubscribeObject(parentNode, button) {
 
 function renderDictionary() {
   const root = document.getElementById("dictionaryList");
-  const query = state.dictFilter.trim().toLowerCase();
-  const visible = query
-    ? state.dictionary.filter((param) =>
-        [
+  const queryTokens = state.dictFilter.trim().toLocaleLowerCase("ru-RU").split(/\s+/).filter(Boolean);
+  const visible = queryTokens.length
+    ? state.dictionary.filter((param) => {
+        const haystack = [
           param.name,
           param.description,
           param.datatype_name,
           param.unit_name,
           param.unit_symbol,
-        ].join(" ").toLowerCase().includes(query),
-      )
+        ].join(" ").toLocaleLowerCase("ru-RU");
+        return queryTokens.every((token) => haystack.includes(token));
+      })
     : state.dictionary;
 
-  setText("dictMeta", `${visible.length} / ${state.dictionary.length} параметров`);
+  const shown = visible.slice(0, state.dictVisibleLimit);
+  setText("dictMeta", `${shown.length} показано · ${visible.length} найдено · ${state.dictionary.length} всего`);
   if (!visible.length) {
     root.innerHTML = `<div class="tree-empty">Параметры не найдены.</div>`;
     return;
   }
 
-  root.innerHTML = visible
+  root.innerHTML = shown
     .map((param) => {
-      const mapped = hasPersistedMappingForParam(param.id);
+      const mapped = state.draftNodes.some((node) => node.dict_param_id === param.id);
       const selected = state.selectedDictParamId === param.id;
       return `
-        <article class="dict-card ${selected ? "selected" : ""}" data-dict-id="${escapeHtml(param.id)}">
+        <button type="button" class="dict-card ${selected ? "selected" : ""}" data-dict-id="${escapeHtml(param.id)}"
+          aria-pressed="${selected ? "true" : "false"}">
           <div class="dict-name">${escapeHtml(param.name)}</div>
           <div class="dict-description">${escapeHtml(param.description || "-")}</div>
           <div class="dict-meta">
@@ -1247,15 +1465,19 @@ function renderDictionary() {
             <span>${escapeHtml(param.unit_symbol || param.unit_name || "без единиц")}</span>
             ${mapped ? `<span class="badge badge-ok">назначен</span>` : ""}
           </div>
-        </article>
+        </button>
       `;
     })
-    .join("");
+    .join("") + (shown.length < visible.length
+      ? `<button type="button" class="dict-load-more" data-dict-load-more>
+           Показать ещё ${Math.min(DICTIONARY_PAGE_SIZE, visible.length - shown.length)}
+         </button>`
+      : "");
 
   for (const card of root.querySelectorAll("[data-dict-id]")) {
     card.addEventListener("click", () => {
       if (state.pendingAssignGroupId) {
-        assignParamToGroup(state.pendingAssignGroupId, card.dataset.dictId);
+        assignParamToGroup(state.pendingAssignGroupId, card.dataset.dictId, state.pendingAssignGroupPath);
         return;
       }
       if (state.pendingAssignNodeId) {
@@ -1266,6 +1488,13 @@ function renderDictionary() {
       renderDictionary();
     });
   }
+
+  root.querySelector("[data-dict-load-more]")?.addEventListener("click", () => {
+    const scrollTop = root.scrollTop;
+    state.dictVisibleLimit += DICTIONARY_PAGE_SIZE;
+    renderDictionary();
+    root.scrollTop = scrollTop;
+  });
 }
 
 function renderSelectionBridge() {
@@ -1273,17 +1502,35 @@ function renderSelectionBridge() {
 }
 
 function openDictModal(title = "Справочник параметров") {
+  state.modalReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const titleEl = document.querySelector(".dict-modal-title");
   if (titleEl) titleEl.textContent = title;
   const overlay = document.getElementById("dictModalOverlay");
   if (overlay) overlay.classList.remove("hidden");
+  document.body.classList.add("modal-open");
+  state.dictFilter = "";
+  state.dictVisibleLimit = DICTIONARY_PAGE_SIZE;
+  const filter = document.getElementById("dictFilter");
+  if (filter) filter.value = "";
   renderDictionary();
-  document.getElementById("dictFilter")?.focus();
+  filter?.focus();
 }
 
 function closeDictModal() {
   const overlay = document.getElementById("dictModalOverlay");
   if (overlay) overlay.classList.add("hidden");
+  document.body.classList.remove("modal-open");
+  const returnFocus = state.modalReturnFocus;
+  state.modalReturnFocus = null;
+  if (returnFocus?.isConnected) returnFocus.focus();
+}
+
+function cancelDictModal() {
+  state.pendingAssignNodeId = null;
+  state.pendingAssignGroupId = null;
+  state.pendingAssignGroupPath = null;
+  closeDictModal();
+  renderMappings();
 }
 
 function assignParamToDraftNode(nodeId, dictParamId) {
@@ -1320,23 +1567,119 @@ function assignParamToDraftNode(nodeId, dictParamId) {
   setConfigStatus(statusText, "warn");
 }
 
-function assignParamToGroup(groupId, dictParamId) {
+function normalizedGroupPath(value) {
+  return Array.isArray(value) ? value.map((segment) => String(segment)) : [];
+}
+
+function normalizedBrowseSegment(value) {
+  return String(value || "").replace(/^\d+:/, "");
+}
+
+function browseItemMatchesGroupSegment(item, segment) {
+  const target = String(segment || "");
+  const normalizedTarget = normalizedBrowseSegment(target);
+  return [item?.browse_name, item?.display_name]
+    .filter(Boolean)
+    .some((value) => String(value) === target || normalizedBrowseSegment(value) === normalizedTarget);
+}
+
+function resolveBrowseGroupNode(groupPath, endpointId) {
+  const path = normalizedGroupPath(groupPath);
+  const selectedEndpoint = document.getElementById("configEndpoint")?.value || "";
+  if (!path.length || !endpointId || selectedEndpoint !== endpointId) return null;
+
+  let candidates = state.configBrowseItems.filter((item) => browseItemMatchesGroupSegment(item, path[0]));
+  for (let index = 1; index < path.length && candidates.length > 0; index += 1) {
+    const parentIds = new Set(candidates.map((item) => item.node_id));
+    candidates = state.configBrowseItems.filter(
+      (item) => parentIds.has(item.parent_node_id) && browseItemMatchesGroupSegment(item, path[index]),
+    );
+  }
+
+  // A duplicated browse path is not safe to expose as a copyable NodeId.
+  if (candidates.length !== 1) return null;
+  const item = candidates[0];
+  return {
+    name: path.at(-1),
+    node_id: item.node_id,
+    node_class: item.node_class || null,
+    browse_name: item.browse_name || null,
+    display_name: item.display_name || null,
+  };
+}
+
+function storedGroupNodeIdentity(node, groupIndex) {
+  const identity = node?.metadata?.opcua_group_nodes?.[groupIndex];
+  if (!identity?.node_id) return null;
+  return {
+    name: identity.name || null,
+    node_id: identity.node_id,
+    node_class: identity.node_class || null,
+    browse_name: identity.browse_name || null,
+    display_name: identity.display_name || null,
+  };
+}
+
+function withResolvedGroupNodeMetadata(node) {
+  const groupPath = normalizedGroupPath(node?.group_path);
+  if (!groupPath.length) return node;
+  const identities = groupPath.map((_, index) => (
+    storedGroupNodeIdentity(node, index)
+      || resolveBrowseGroupNode(groupPath.slice(0, index + 1), node.endpoint_id)
+  ));
+  if (!identities.some(Boolean)) return node;
+  return {
+    ...node,
+    metadata: {
+      ...(node.metadata || {}),
+      opcua_group_nodes: identities,
+    },
+  };
+}
+
+function withResolvedBrowsePathMetadata(node) {
+  if (node?.group_id || !node?.node_id) return node;
+  const storedPath = Array.isArray(node.metadata?.opcua_browse_path)
+    ? node.metadata.opcua_browse_path.filter(Boolean).map(String)
+    : [];
+  if (storedPath.length > 1) return node;
+  const resolvedPath = browsePathForNode(node);
+  if (resolvedPath.length <= 1) return node;
+  return {
+    ...node,
+    metadata: {
+      ...(node.metadata || {}),
+      opcua_browse_path: resolvedPath,
+    },
+  };
+}
+
+function groupPathStartsWith(path, parentPath) {
+  const normalizedPath = normalizedGroupPath(path);
+  const normalizedParent = normalizedGroupPath(parentPath);
+  return normalizedParent.length > 0 && normalizedPath.length >= normalizedParent.length
+    && normalizedParent.every((segment, index) => segment === normalizedPath[index]);
+}
+
+function draftGroupMembers(groupId, groupPath, endpointId) {
+  const normalizedPath = normalizedGroupPath(groupPath);
+  return state.draftNodes.filter((node) => {
+    if (endpointId && node.endpoint_id !== endpointId) return false;
+    if (normalizedPath.length > 0) return groupPathStartsWith(node.group_path, normalizedPath);
+    return node.group_id === groupId;
+  });
+}
+
+function assignParamToGroup(groupId, dictParamId, requestedGroupPath = null) {
   const param = state.dictionary.find((item) => item.id === dictParamId);
   if (!param) return;
   const currentEndpoint = document.getElementById("configEndpoint")?.value || "";
   const baseNode = state.draftNodes.find((n) => n.group_id === groupId);
-  if (!baseNode) return;
-  const basePath = Array.isArray(baseNode.group_path) && baseNode.group_path.length > 0
-    ? baseNode.group_path
-    : null;
-  // Assign to nodes in this group AND all descendant groups (group_path starts with basePath)
-  const groupNodes = state.draftNodes.filter((n) => {
-    if (currentEndpoint && n.endpoint_id !== currentEndpoint) return false;
-    if (!basePath) return n.group_id === groupId; // no path info: exact group_id match only
-    if (!n.group_path) return n.group_id === groupId;
-    if (n.group_path.length < basePath.length) return false;
-    return basePath.every((seg, i) => seg === n.group_path[i]);
-  });
+  const basePath = normalizedGroupPath(requestedGroupPath).length > 0
+    ? normalizedGroupPath(requestedGroupPath)
+    : normalizedGroupPath(baseNode?.group_path);
+  const groupNodes = draftGroupMembers(groupId, basePath, currentEndpoint);
+  if (!groupNodes.length) return;
   const reassignedCount = groupNodes.filter((n) => n.parameter_code && n.parameter_code !== param.name).length;
   for (const node of groupNodes) {
     const idx = state.draftNodes.indexOf(node);
@@ -1353,13 +1696,53 @@ function assignParamToGroup(groupId, dictParamId) {
     };
   }
   state.pendingAssignGroupId = null;
+  state.pendingAssignGroupPath = null;
   closeDictModal();
   updatePendingConfigChanges();
   renderMappings();
   renderConfigBrowseTree();
-  const groupName = baseNode?.group_display_name || groupId;
+  const groupName = basePath.at(-1) || baseNode?.group_display_name || groupId;
   const actionText = reassignedCount > 0 ? "переназначен" : "назначен";
   setConfigStatus(`Параметр «${param.name}» ${actionText} ${groupNodes.length} нодам группы «${groupName}». Не забудьте сохранить.`, "warn");
+}
+
+function removeDraftGroup(groupId, groupPath, endpointId, groupName) {
+  const members = draftGroupMembers(groupId, groupPath, endpointId);
+  if (!members.length) return;
+  const memberKeys = new Set(members.map((node) => nodeKey(node.endpoint_id, node.node_id)));
+  const memberIds = new Set(members.map((node) => node.id));
+  const removedEntries = state.draftNodes
+    .map((node, index) => ({ node, index }))
+    .filter((entry) => memberKeys.has(nodeKey(entry.node.endpoint_id, entry.node.node_id)));
+
+  state.draftNodes = state.draftNodes.filter((node) => !memberKeys.has(nodeKey(node.endpoint_id, node.node_id)));
+  if (state.pendingAssignNodeId && memberIds.has(state.pendingAssignNodeId)) state.pendingAssignNodeId = null;
+  if (state.pendingAssignGroupId === groupId) {
+    state.pendingAssignGroupId = null;
+    state.pendingAssignGroupPath = null;
+  }
+  state.workspaceCollapsed.delete(groupId);
+  state.workspaceVisibleLimits.delete(groupId);
+  updatePendingConfigChanges();
+  renderConfigBrowseTree();
+  renderMappings();
+
+  setConfigStatus(`Группа «${groupName}» и ${removedEntries.length} нод удалены из черновика.`, "warn", {
+    label: "Отменить",
+    onClick: () => {
+      const existingKeys = new Set(state.draftNodes.map((node) => nodeKey(node.endpoint_id, node.node_id)));
+      for (const { node, index } of removedEntries) {
+        const key = nodeKey(node.endpoint_id, node.node_id);
+        if (existingKeys.has(key)) continue;
+        state.draftNodes.splice(Math.min(index, state.draftNodes.length), 0, node);
+        existingKeys.add(key);
+      }
+      updatePendingConfigChanges();
+      renderConfigBrowseTree();
+      renderMappings();
+      setConfigStatus(`Группа «${groupName}» восстановлена в черновике.`, "success");
+    },
+  });
 }
 
 function assignSelectedPair() {
@@ -1377,7 +1760,7 @@ function assignNodeToParam(browseNode, dictParamId) {
   const previous = existingIndex >= 0 ? state.draftNodes[existingIndex] : null;
   const nodeConfig = {
     ...(previous || {}),
-    id: previous?.id || makeNodeConfigId(endpointId, param.name),
+    id: previous?.id || makeNodeConfigId(endpointId, browseNode.node_id, "node"),
     endpoint_id: endpointId,
     node_id: browseNode.node_id,
     namespace_uri: previous?.namespace_uri || null,
@@ -1412,6 +1795,7 @@ function assignNodeToParam(browseNode, dictParamId) {
       opcua_browse_name: browseNode.browse_name || null,
       opcua_display_name: browseNode.display_name || null,
       opcua_data_type: browseNode.data_type || null,
+      opcua_browse_path: browsePathForNode(browseNode),
     },
     tags: previous?.tags || [],
   };
@@ -1432,6 +1816,9 @@ function assignNodeToParam(browseNode, dictParamId) {
 
 function renderMappings() {
   const root = document.getElementById("mappingList");
+  const tableWrap = root.closest(".mapping-table-wrap");
+  const previousScrollTop = tableWrap?.scrollTop || 0;
+  const previousScrollLeft = tableWrap?.scrollLeft || 0;
   const filterEl = document.getElementById("mappingFilter");
   const filterText = filterEl ? filterEl.value.toLowerCase() : "";
   const dictCodes = new Set(state.dictionary.map((p) => p.name));
@@ -1458,7 +1845,7 @@ function renderMappings() {
       )
     : endpointNodes;
 
-  const makeNodeRow = (node, rowIdx, depth = 0) => {
+  const makeNodeRow = (node, rowIdx) => {
     const savedNode = savedById.get(node.id);
     const isNew = !savedNode;
     const isChanged = savedNode && JSON.stringify(node) !== JSON.stringify(savedNode);
@@ -1486,60 +1873,103 @@ function renderMappings() {
       : isPending
         ? `<span class="assign-hint">выберите в справочнике</span>`
         : `<button class="ua-assign-btn" type="button" data-assign-node="${escapeHtml(node.id)}">Назначить</button>`;
-    const indentLevel = Math.max(depth, 0);
+    const storedBrowsePath = Array.isArray(node.metadata?.opcua_browse_path)
+      ? node.metadata.opcua_browse_path.filter(Boolean).map(String)
+      : [];
+    const standaloneBrowsePath = node.group_id
+      ? []
+      : (storedBrowsePath.length > 1 ? storedBrowsePath : browsePathForNode(node));
+    const nodeContext = standaloneBrowsePath.length > 1
+      ? `<span class="ua-node-breadcrumb" title="${escapeHtml(standaloneBrowsePath.join(" / "))}">${standaloneBrowsePath.map(escapeHtml).join('<span class="ua-node-path-separator">/</span>')}</span>`
+      : node.browse_name
+        ? `<span class="ua-browse-name">${escapeHtml(node.browse_name)}</span>`
+        : "";
     return `
       <tr class="ua-row ${rowClass}" data-node-id="${escapeHtml(node.id)}">
         <td class="col-num">${rowIdx}</td>
         <td class="col-nodeid" title="${escapeHtml(node.node_id + (node.browse_name ? '\n' + node.browse_name : ''))}">
-          <div class="ua-node-cell depth-${Math.min(indentLevel, 6)}">
-            <code>${escapeHtml(node.node_id)}</code>
-            ${node.browse_name ? `<span class="ua-browse-name">${escapeHtml(node.browse_name)}</span>` : ""}
+          <div class="ua-node-cell">
+            <div class="ua-node-id-line">
+              <code>${escapeHtml(node.node_id)}</code>
+              <button class="ua-copy-btn" type="button" data-copy-text="${escapeHtml(node.node_id)}"
+                title="Скопировать Node ID" aria-label="Скопировать Node ID"></button>
+            </div>
+            ${nodeContext}
           </div>
         </td>
         <td class="col-param-cell" ${paramTitle ? `title="${paramTitle}"` : ""}>${paramCell}</td>
         <td class="col-mode">${escapeHtml(node.acquisition_mode || "-")}</td>
         <td class="col-type">${escapeHtml(node.expected_type || "-")}</td>
-        <td class="col-del"><button class="ua-del-btn" type="button" data-remove-node="${escapeHtml(node.id)}" title="Удалить">×</button></td>
+        <td class="col-del"><button class="ua-del-btn" type="button" data-remove-node="${escapeHtml(node.id)}"
+          title="Удалить ноду из черновика" aria-label="Удалить ${escapeHtml(node.display_name || node.browse_name || node.node_id)}">×</button></td>
       </tr>`;
   };
 
-  // Build group map keyed by group_id
-  const groupMap = new Map();
+  // Materialize every group_path prefix. A node stored in ["DB", "Array"]
+  // therefore renders as DB -> Array instead of one ambiguous "DB / Array" row.
+  const groupsByPath = new Map();
   const ungrouped = [];
   for (const node of filtered) {
-    if (node.group_id) {
-      if (!groupMap.has(node.group_id)) {
-        groupMap.set(node.group_id, {
+    const groupPath = normalizedGroupPath(node.group_path);
+    if (node.group_id && groupPath.length > 0) {
+      for (let length = 1; length <= groupPath.length; length += 1) {
+        const path = groupPath.slice(0, length);
+        const pathKey = JSON.stringify(path);
+        const isLeafGroup = length === groupPath.length;
+        const nodeIdentity = storedGroupNodeIdentity(node, length - 1)
+          || resolveBrowseGroupNode(path, node.endpoint_id);
+        if (!groupsByPath.has(pathKey)) {
+          groupsByPath.set(pathKey, {
+            group_id: isLeafGroup ? node.group_id : makeNodeConfigId(currentEndpoint, path.join("/"), "group"),
+            group_path: path,
+            display_name: path.at(-1),
+            node_identity: nodeIdentity,
+            nodes: [],
+            children: [],
+            is_virtual: !isLeafGroup,
+          });
+        } else if (isLeafGroup) {
+          const existingGroup = groupsByPath.get(pathKey);
+          existingGroup.group_id = node.group_id;
+          existingGroup.is_virtual = false;
+          if (!existingGroup.node_identity && nodeIdentity) existingGroup.node_identity = nodeIdentity;
+        } else if (nodeIdentity && !groupsByPath.get(pathKey).node_identity) {
+          groupsByPath.get(pathKey).node_identity = nodeIdentity;
+        }
+      }
+      groupsByPath.get(JSON.stringify(groupPath)).nodes.push(node);
+    } else if (node.group_id) {
+      const path = [node.group_display_name || node.group_id];
+      const pathKey = JSON.stringify(path);
+      if (!groupsByPath.has(pathKey)) {
+        groupsByPath.set(pathKey, {
           group_id: node.group_id,
-          group_path: node.group_path || [],
+          group_path: [],
           display_name: node.group_display_name || node.group_id,
+          node_identity: null,
           nodes: [],
           children: [],
+          is_virtual: false,
         });
       }
-      groupMap.get(node.group_id).nodes.push(node);
+      groupsByPath.get(pathKey).nodes.push(node);
     } else {
       ungrouped.push(node);
     }
   }
 
-  // Build parent-child relationships from group_path prefix matching
-  const allGroups = [...groupMap.values()].sort((a, b) => a.group_path.length - b.group_path.length);
+  // O(G) hierarchy construction by path key; the previous implementation did
+  // repeated find/some scans and became quadratic for deeply grouped configs.
+  const allGroups = [...groupsByPath.values()].sort((a, b) => a.group_path.length - b.group_path.length);
+  const topGroups = [];
   for (const group of allGroups) {
-    if (group.group_path.length < 2) continue;
-    const parentPath = group.group_path.slice(0, -1);
-    const parent = allGroups.find(
-      (g) => g.group_path.length === parentPath.length && parentPath.every((seg, i) => seg === g.group_path[i]),
-    );
+    const parent = group.group_path.length > 1
+      ? groupsByPath.get(JSON.stringify(group.group_path.slice(0, -1)))
+      : null;
     if (parent) parent.children.push(group);
+    else topGroups.push(group);
   }
-  const topGroups = allGroups.filter((g) => {
-    if (g.group_path.length < 2) return true;
-    const parentPath = g.group_path.slice(0, -1);
-    return !allGroups.some(
-      (other) => other !== g && other.group_path.length === parentPath.length && parentPath.every((seg, i) => seg === other.group_path[i]),
-    );
-  });
+  const groupsById = new Map(allGroups.map((group) => [group.group_id, group]));
 
   function countNodes(group) {
     return group.nodes.length + group.children.reduce((s, c) => s + countNodes(c), 0);
@@ -1556,33 +1986,86 @@ function renderMappings() {
   function renderGroup(group, depth) {
     const isCollapsed = state.workspaceCollapsed.has(group.group_id);
     const totalCount = countNodes(group);
+    const nestedCount = totalCount - group.nodes.length;
     const unbound = hasUnbound(group);
     const assignGroupLabel = unbound ? "Назначить всем" : "Переназначить";
-    // Always show full path so the name is never empty
-    const pathLabel = Array.isArray(group.group_path) && group.group_path.length > 0
-      ? group.group_path.join(" / ")
-      : (group.display_name || group.group_id);
+    const groupPath = normalizedGroupPath(group.group_path);
+    const groupName = groupPath.at(-1) || group.display_name || group.group_id;
+    const parentPath = groupPath.slice(0, -1);
+    const pathLabel = groupPath.length > 0 ? groupPath.join(" / ") : groupName;
+    const breadcrumb = parentPath.length > 0
+      ? parentPath.map((segment) => `<span>${escapeHtml(segment)}</span>`).join('<span class="ua-group-path-separator">/</span>')
+      : '<span class="ua-group-root-label">Корневая группа</span>';
+    const groupPathJson = escapeHtml(JSON.stringify(groupPath));
+    const groupNodeId = group.node_identity?.node_id || null;
+    const groupNodeClass = group.node_identity?.node_class || null;
     html += `
-      <tr class="ua-group-header${depth > 0 ? " ua-group-sub" : ""}">
+      <tr class="ua-group-header${depth > 0 ? " ua-group-sub" : ""}"
+        style="--group-indent: ${Math.min(depth, 6) * 12}px">
         <td class="ua-group-toggle-cell">
-          <button class="ua-group-toggle" type="button" data-toggle-group="${escapeHtml(group.group_id)}">${isCollapsed ? "▶" : "▼"}</button>
+          <button class="ua-group-toggle" type="button" data-toggle-group="${escapeHtml(group.group_id)}"
+            aria-expanded="${isCollapsed ? "false" : "true"}" aria-label="${isCollapsed ? "Раскрыть" : "Свернуть"} группу ${escapeHtml(pathLabel)}">
+            <span class="ua-chevron" aria-hidden="true"></span>
+          </button>
         </td>
         <td colspan="5" class="ua-group-cell">
-          <div class="ua-group-inner depth-${Math.min(depth, 6)}">
-            <span class="ua-group-name-text" title="${escapeHtml(pathLabel)}">${escapeHtml(pathLabel)}</span>
-            <span class="ua-group-count">${totalCount} нод</span>
-            <button class="ua-assign-group-btn ${unbound ? "has-unbound" : ""}" type="button"
-              data-assign-group="${escapeHtml(group.group_id)}"
-              data-group-name="${escapeHtml(pathLabel)}"
-              data-assign-mode="${unbound ? "assign" : "reassign"}">${assignGroupLabel}</button>
+          <div class="ua-group-inner">
+            <span class="ua-group-icon">${bootstrapIcon("group")}</span>
+            <div class="ua-group-identity">
+              <div class="ua-group-breadcrumb" aria-label="Родительский путь: ${escapeHtml(parentPath.join(" / ") || "корень")}">${breadcrumb}</div>
+              <div class="ua-group-title-row">
+                <span class="ua-group-name-text" title="${escapeHtml(pathLabel)}">${escapeHtml(groupName)}</span>
+                ${group.is_virtual ? '<span class="ua-group-virtual-badge">раздел</span>' : ""}
+              </div>
+              ${groupNodeId ? `
+                <div class="ua-group-node-meta" title="${escapeHtml(groupNodeId)}">
+                  <code>${escapeHtml(groupNodeId)}</code>
+                  ${groupNodeClass ? `<span class="ua-group-node-class">${escapeHtml(groupNodeClass)}</span>` : ""}
+                  <button class="ua-copy-btn" type="button" data-copy-text="${escapeHtml(groupNodeId)}"
+                    title="Скопировать Node ID родительской ноды" aria-label="Скопировать Node ID группы ${escapeHtml(groupName)}"></button>
+                </div>` : ""}
+            </div>
+            <div class="ua-group-stats" aria-label="${totalCount} нод в группе">
+              <span class="ua-group-count">${totalCount} нод</span>
+              ${nestedCount > 0 ? `<span class="ua-group-nested-count">${nestedCount} во вложенных</span>` : ""}
+            </div>
+            <div class="ua-group-actions">
+              <button class="ua-assign-group-btn ${unbound ? "has-unbound" : ""}" type="button"
+                data-assign-group="${escapeHtml(group.group_id)}"
+                data-group-path='${groupPathJson}'
+                data-group-name="${escapeHtml(pathLabel)}"
+                data-assign-mode="${unbound ? "assign" : "reassign"}">
+                ${bootstrapIcon("diagram")}<span>${assignGroupLabel}</span>
+              </button>
+              <button class="ua-remove-group-btn" type="button"
+                data-remove-group="${escapeHtml(group.group_id)}"
+                data-group-path='${groupPathJson}'
+                data-group-name="${escapeHtml(pathLabel)}"
+                title="Удалить группу и все вложенные ноды">
+                ${bootstrapIcon("trash")}<span>Удалить</span>
+              </button>
+            </div>
           </div>
         </td>
       </tr>`;
     if (!isCollapsed) {
+      const visibleLimit = state.workspaceVisibleLimits.get(group.group_id) || WORKSPACE_PAGE_SIZE;
+      const visibleNodes = group.nodes.slice(0, visibleLimit);
+      const hiddenDirectNodes = group.nodes.length - visibleNodes.length;
       let localIdx = 0;
-      for (const node of group.nodes) {
+      for (const node of visibleNodes) {
         localIdx++;
-        html += makeNodeRow(node, localIdx, depth + 1);
+        html += makeNodeRow(node, localIdx);
+      }
+      if (hiddenDirectNodes > 0) {
+        html += `
+          <tr class="ua-load-more-row">
+            <td colspan="6">
+              <button class="ua-load-more-btn" type="button" data-load-more-group="${escapeHtml(group.group_id)}">
+                Показать ещё ${Math.min(WORKSPACE_PAGE_SIZE, hiddenDirectNodes)} из ${hiddenDirectNodes}
+              </button>
+            </td>
+          </tr>`;
       }
       for (const child of group.children) {
         renderGroup(child, depth + 1);
@@ -1593,13 +2076,40 @@ function renderMappings() {
   for (const group of topGroups) {
     renderGroup(group, 0);
   }
+  if (topGroups.length > 0 && ungrouped.length > 0) {
+    html += `
+      <tr class="ua-standalone-divider">
+        <td colspan="6">
+          <div class="ua-standalone-divider-inner">
+            <span class="ua-standalone-divider-label">Отдельные ноды</span>
+            <span class="ua-standalone-divider-count">${ungrouped.length}</span>
+          </div>
+        </td>
+      </tr>`;
+  }
   let ungroupedIdx = 0;
-  for (const node of ungrouped) {
+  const visibleUngrouped = ungrouped.slice(0, state.workspaceUngroupedLimit);
+  for (const node of visibleUngrouped) {
     ungroupedIdx++;
     html += makeNodeRow(node, ungroupedIdx, 0);
   }
+  const hiddenUngrouped = ungrouped.length - visibleUngrouped.length;
+  if (hiddenUngrouped > 0) {
+    html += `
+      <tr class="ua-load-more-row">
+        <td colspan="6">
+          <button class="ua-load-more-btn" type="button" data-load-more-ungrouped>
+            Показать ещё ${Math.min(WORKSPACE_PAGE_SIZE, hiddenUngrouped)} из ${hiddenUngrouped}
+          </button>
+        </td>
+      </tr>`;
+  }
 
   root.innerHTML = html;
+  if (tableWrap) {
+    tableWrap.scrollTop = previousScrollTop;
+    tableWrap.scrollLeft = previousScrollLeft;
+  }
 
   for (const button of root.querySelectorAll("[data-toggle-group]")) {
     button.addEventListener("click", () => {
@@ -1613,12 +2123,63 @@ function renderMappings() {
     });
   }
 
+  for (const button of root.querySelectorAll("[data-remove-group]")) {
+    button.addEventListener("click", () => {
+      const groupId = button.dataset.removeGroup;
+      const group = groupsById.get(groupId);
+      const groupPath = group?.group_path || JSON.parse(button.dataset.groupPath || "[]");
+      removeDraftGroup(
+        groupId,
+        groupPath,
+        currentEndpoint,
+        button.dataset.groupName || groupPath.join(" / ") || groupId,
+      );
+    });
+  }
+
+  for (const button of root.querySelectorAll("[data-load-more-group]")) {
+    button.addEventListener("click", () => {
+      const groupId = button.dataset.loadMoreGroup;
+      const currentLimit = state.workspaceVisibleLimits.get(groupId) || WORKSPACE_PAGE_SIZE;
+      state.workspaceVisibleLimits.set(groupId, currentLimit + WORKSPACE_PAGE_SIZE);
+      renderMappings();
+    });
+  }
+
+  for (const button of root.querySelectorAll("[data-load-more-ungrouped]")) {
+    button.addEventListener("click", () => {
+      state.workspaceUngroupedLimit += WORKSPACE_PAGE_SIZE;
+      renderMappings();
+    });
+  }
+
+  for (const button of root.querySelectorAll("[data-copy-text]")) {
+    button.addEventListener("click", async () => {
+      const copied = await copyTextToClipboard(button.dataset.copyText);
+      setConfigStatus(copied ? "Node ID скопирован." : "Не удалось скопировать Node ID.", copied ? "success" : "error");
+    });
+  }
+
   for (const button of root.querySelectorAll("[data-remove-node]")) {
     button.addEventListener("click", () => {
+      const removedIndex = state.draftNodes.findIndex((node) => node.id === button.dataset.removeNode);
+      if (removedIndex < 0) return;
       if (state.pendingAssignNodeId === button.dataset.removeNode) state.pendingAssignNodeId = null;
-      state.draftNodes = state.draftNodes.filter((node) => node.id !== button.dataset.removeNode);
+      const [removedNode] = state.draftNodes.splice(removedIndex, 1);
       updatePendingConfigChanges();
-      setConfigStatus("Нода удалена из черновика.", "warn");
+      setConfigStatus(`Нода «${removedNode.display_name || removedNode.browse_name || removedNode.node_id}» удалена из черновика.`, "warn", {
+        label: "Отменить",
+        onClick: () => {
+          const alreadyExists = state.draftNodes.some(
+            (node) => node.endpoint_id === removedNode.endpoint_id && node.node_id === removedNode.node_id,
+          );
+          if (!alreadyExists) state.draftNodes.splice(Math.min(removedIndex, state.draftNodes.length), 0, removedNode);
+          updatePendingConfigChanges();
+          renderConfigBrowseTree();
+          renderMappings();
+          setConfigStatus("Удаление отменено.", "success");
+        },
+      });
       renderConfigBrowseTree();
       renderMappings();
     });
@@ -1628,6 +2189,7 @@ function renderMappings() {
     button.addEventListener("click", () => {
       state.pendingAssignNodeId = button.dataset.assignNode;
       state.pendingAssignGroupId = null;
+      state.pendingAssignGroupPath = null;
       renderMappings();
       openDictModal(button.dataset.assignMode === "reassign" ? "Переназначить параметр" : "Назначить параметр");
     });
@@ -1636,6 +2198,7 @@ function renderMappings() {
   for (const button of root.querySelectorAll("[data-assign-group]")) {
     button.addEventListener("click", () => {
       state.pendingAssignGroupId = button.dataset.assignGroup;
+      state.pendingAssignGroupPath = JSON.parse(button.dataset.groupPath || "[]");
       state.pendingAssignNodeId = null;
       const action = button.dataset.assignMode === "reassign" ? "Переназначить" : "Назначить всем";
       openDictModal(`${action} в «${button.dataset.groupName}»`);
@@ -1660,10 +2223,22 @@ async function saveConfiguration() {
     return;
   }
 
-  const nodesToSave = state.draftNodes.map((node) => ({
+  const seenNodeKeys = new Set();
+  const duplicateNodes = [];
+  for (const node of state.draftNodes) {
+    const key = nodeKey(node.endpoint_id, node.node_id);
+    if (seenNodeKeys.has(key)) duplicateNodes.push(`${node.endpoint_id}: ${node.node_id}`);
+    seenNodeKeys.add(key);
+  }
+  if (duplicateNodes.length) {
+    setConfigStatus(`Невозможно сохранить: найдены повторяющиеся NodeId (${duplicateNodes.slice(0, 5).join(", ")}${duplicateNodes.length > 5 ? "…" : ""}).`, "error");
+    return;
+  }
+
+  const nodesToSave = state.draftNodes.map((node) => withResolvedBrowsePathMetadata(withResolvedGroupNodeMetadata({
     ...node,
     group_path: Array.isArray(node.group_path) ? node.group_path : [],
-  }));
+  })));
   const response = await fetchJson("/api/config/nodes", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -1681,13 +2256,23 @@ async function saveConfiguration() {
   await fetchSnapshot();
 }
 
-function makeNodeConfigId(endpointId, paramName) {
-  const normalized = `${endpointId}-${paramName}`
+function stableStringHash(value) {
+  let hash = 0x811c9dc5;
+  for (const char of String(value || "")) {
+    hash ^= char.codePointAt(0);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36).padStart(7, "0");
+}
+
+function makeNodeConfigId(endpointId, identity, kind = "group") {
+  const source = `${kind}\u0000${endpointId || ""}\u0000${identity || ""}`;
+  const normalized = `${kind}-${endpointId}-${identity}`
     .toLowerCase()
     .replace(/[^a-z0-9а-яё]+/gi, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 96);
-  return normalized || `node-${Date.now()}`;
+    .slice(0, 72);
+  return `${normalized || kind}-${stableStringHash(source)}`;
 }
 
 function mapDatatypeToExpectedType(datatype) {
@@ -1700,8 +2285,195 @@ function mapDatatypeToExpectedType(datatype) {
   return "float";
 }
 
+function normalizedBindingValue(value) {
+  return String(value || "").trim().toLocaleLowerCase("ru-RU");
+}
+
+function downloadResponseBlob(response, fallbackName) {
+  return response.blob().then((blob) => {
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = match?.[1] || fallbackName;
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  });
+}
+
+async function downloadBindingsTemplate() {
+  const response = await fetch("/api/config/bindings/template");
+  if (!response.ok) throw new Error(await response.text());
+  await downloadResponseBlob(response, "opcua-bindings-template.xlsx");
+  setConfigStatus("Шаблон XLSX скачан. Заполните лист «Привязки» и загрузите файл кнопкой «Импорт».", "success");
+}
+
+async function exportBindings() {
+  if (!state.draftNodes.length) {
+    setConfigStatus("В рабочей области нет привязок для экспорта.", "warn");
+    return;
+  }
+  const response = await fetch("/api/config/bindings/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nodes: state.draftNodes }),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  await downloadResponseBlob(response, "opcua-bindings.xlsx");
+  setConfigStatus(`Экспортировано ${state.draftNodes.length} привязок из текущей рабочей области.`, "success");
+}
+
+function buildImportedNode(row, endpointId, param) {
+  const groupPath = Array.isArray(row.group_path) ? row.group_path : [];
+  const unit = param.unit_symbol || param.unit_name || row.unit || null;
+  return {
+    id: makeNodeConfigId(endpointId, row.node_id, "node"),
+    endpoint_id: endpointId,
+    node_id: row.node_id,
+    browse_name: row.browse_name || null,
+    display_name: row.display_name || null,
+    enabled: row.enabled !== false,
+    acquisition_mode: row.acquisition_mode || "subscription",
+    read_enabled: row.read_enabled !== false,
+    write_enabled: row.write_enabled === true,
+    sampling_interval_ms: Number(row.sampling_interval_ms) || 1000,
+    polling_interval_seconds: Number(row.polling_interval_seconds) || 5,
+    parameter_code: param.name,
+    parameter_name: param.description || row.parameter_name || param.name,
+    dict_param_id: param.id || null,
+    type_by_dict: param.datatype_name || null,
+    unit_by_dict: param.unit_symbol || param.unit_name || null,
+    expected_type: mapDatatypeToExpectedType(param.datatype_name || row.expected_type),
+    value_shape: row.value_shape || "scalar",
+    unit,
+    group_id: groupPath.length ? makeNodeConfigId(endpointId, groupPath.join("/")) : null,
+    group_path: groupPath,
+    group_display_name: groupPath.at(-1) || null,
+    value_transform: { scale_factor: 1, offset: 0, target_unit: unit },
+    input_control: { stale_after_seconds: 30, suppress_duplicates: false },
+    metadata: {
+      opcua_browse_name: row.browse_name || null,
+      opcua_display_name: row.display_name || null,
+      imported_from_table: true,
+    },
+    tags: Array.isArray(row.tags) ? row.tags : [],
+  };
+}
+
+function mergeImportedBindings(result) {
+  if (!state.dictionary.length) {
+    setConfigStatus("Справочник параметров не загружен. Сначала нажмите «Обновить данные» и повторите импорт.", "error");
+    return;
+  }
+  const selectedEndpoint = document.getElementById("configEndpoint")?.value || "";
+  const knownEndpoints = new Set(
+    [...document.querySelectorAll("#configEndpoint option")].map((option) => option.value).filter(Boolean),
+  );
+  const dictByCode = new Map(state.dictionary.map((param) => [normalizedBindingValue(param.name), param]));
+  const existingNodes = new Set(state.draftNodes.map((node) => nodeKey(node.endpoint_id, node.node_id)));
+  const existingParamIds = new Set(state.draftNodes.map((node) => normalizedBindingValue(node.dict_param_id)).filter(Boolean));
+  const existingParamCodes = new Set(state.draftNodes.map((node) => normalizedBindingValue(node.parameter_code)).filter(Boolean));
+  const importedNodes = new Set();
+  const importedParamIds = new Set();
+  const importedParamCodes = new Set();
+  const messages = [];
+  let added = 0;
+  let skipped = 0;
+
+  for (const row of result.rows || []) {
+    const endpointId = String(row.endpoint_id || selectedEndpoint).trim();
+    const param = dictByCode.get(normalizedBindingValue(row.parameter_code));
+    const rowLabel = row.source_row
+      ? `строка ${row.source_row} (${row.node_id || "NodeId не указан"})`
+      : `NodeId ${row.node_id || "не указан"}`;
+
+    if (!endpointId) {
+      messages.push(`${rowLabel}: не указан endpoint.`);
+      skipped++;
+      continue;
+    }
+    if (knownEndpoints.size && !knownEndpoints.has(endpointId)) {
+      messages.push(`${rowLabel}: endpoint «${endpointId}» не найден.`);
+      skipped++;
+      continue;
+    }
+    if (!param) {
+      messages.push(`${rowLabel}: параметр «${row.parameter_code || ""}» не найден в Справочнике.`);
+      skipped++;
+      continue;
+    }
+
+    const opcKey = nodeKey(endpointId, row.node_id);
+    const paramId = normalizedBindingValue(param.id);
+    const paramCode = normalizedBindingValue(param.name);
+    if (existingNodes.has(opcKey) || importedNodes.has(opcKey)) {
+      messages.push(`${rowLabel}: NodeId уже есть в рабочей области.`);
+      skipped++;
+      continue;
+    }
+    if (
+      (paramId && (existingParamIds.has(paramId) || importedParamIds.has(paramId)))
+      || (paramCode && (existingParamCodes.has(paramCode) || importedParamCodes.has(paramCode)))
+    ) {
+      messages.push(`${rowLabel}: параметр «${param.name}» уже привязан.`);
+      skipped++;
+      continue;
+    }
+
+    state.draftNodes.push(buildImportedNode(row, endpointId, param));
+    importedNodes.add(opcKey);
+    if (paramId) importedParamIds.add(paramId);
+    if (paramCode) importedParamCodes.add(paramCode);
+    added++;
+  }
+
+  for (const issue of result.issues || []) {
+    messages.push(`Строка ${issue.row}, ${issue.field}: ${issue.message}`);
+  }
+  messages.push(...(result.warnings || []));
+
+  updatePendingConfigChanges();
+  renderMappings();
+  renderConfigBrowseTree();
+
+  const issueCount = (result.issues || []).length;
+  const details = messages.slice(0, 12);
+  if (messages.length > details.length) details.push(`И ещё ${messages.length - details.length} замечаний.`);
+  const summary = [
+    `Импорт: добавлено ${added}, пропущено ${skipped}, ошибок таблицы ${issueCount}.`,
+    "Изменения только в черновике; для применения нажмите «Сохранить в клиент».",
+    ...details,
+  ];
+  setConfigStatus(summary.join("\n"), added ? (messages.length ? "warn" : "success") : "warn");
+}
+
+async function importBindingsFile(file) {
+  if (!file) return;
+  const formData = new FormData();
+  formData.append("file", file);
+  const response = await fetch("/api/config/bindings/import", { method: "POST", body: formData });
+  if (!response.ok) {
+    let message = await response.text();
+    try {
+      const parsed = JSON.parse(message);
+      message = parsed.detail || message;
+    } catch { /* use response text */ }
+    throw new Error(message);
+  }
+  mergeImportedBindings(await response.json());
+}
+
 document.getElementById("refreshButton").addEventListener("click", (event) => {
-  withBusy(event.currentTarget, fetchSnapshot).catch(() => undefined);
+  withBusy(event.currentTarget, fetchSnapshot).catch((error) => {
+    const readyBadge = document.getElementById("readyBadge");
+    readyBadge.className = "badge badge-bad";
+    readyBadge.textContent = "error";
+    setText("updatedAt", error.message);
+  });
 });
 document.addEventListener("click", (event) => {
   const button = event.target.closest(".reconnect-now");
@@ -1785,6 +2557,21 @@ document.getElementById("saveConfigButton").addEventListener("click", () => {
   const button = document.getElementById("saveConfigButton");
   withBusy(button, saveConfiguration).catch((error) => setConfigStatus(error.message, "error"));
 });
+document.getElementById("bindingsTemplateButton")?.addEventListener("click", (event) => {
+  withBusy(event.currentTarget, downloadBindingsTemplate).catch((error) => setConfigStatus(error.message, "error"));
+});
+document.getElementById("bindingsExportButton")?.addEventListener("click", (event) => {
+  withBusy(event.currentTarget, exportBindings).catch((error) => setConfigStatus(error.message, "error"));
+});
+document.getElementById("bindingsImportButton")?.addEventListener("click", () => {
+  document.getElementById("bindingsFileInput")?.click();
+});
+document.getElementById("bindingsFileInput")?.addEventListener("change", (event) => {
+  const file = event.target.files?.[0];
+  const button = document.getElementById("bindingsImportButton");
+  withBusy(button, () => importBindingsFile(file)).catch((error) => setConfigStatus(error.message, "error"));
+  event.target.value = "";
+});
 document.getElementById("configBrowseButton").addEventListener("click", () => {
   const button = document.getElementById("configBrowseButton");
   withBusy(button, browseForConfig).catch((error) => setConfigStatus(error.message, "error"));
@@ -1846,27 +2633,51 @@ document.getElementById("configTreeSearch")?.addEventListener("input", (event) =
 
 // Dict modal close
 document.getElementById("dictModalClose")?.addEventListener("click", () => {
-  state.pendingAssignNodeId = null;
-  state.pendingAssignGroupId = null;
-  closeDictModal();
-  renderMappings();
-});
-document.getElementById("dictModalOverlay")?.addEventListener("click", (event) => {
-  if (event.target === event.currentTarget) {
-    state.pendingAssignNodeId = null;
-    state.pendingAssignGroupId = null;
-    closeDictModal();
-    renderMappings();
-  }
+  cancelDictModal();
 });
 document.getElementById("dictFilter")?.addEventListener("input", (event) => {
   state.dictFilter = event.target.value;
-  renderDictionary();
+  state.dictVisibleLimit = DICTIONARY_PAGE_SIZE;
+  clearTimeout(dictionaryFilterTimer);
+  dictionaryFilterTimer = setTimeout(renderDictionary, 100);
+});
+document.getElementById("dictModalOverlay")?.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    // This modal is intentionally persistent: accidental pointer release on
+    // the backdrop and Escape must not discard an in-progress search.
+    event.preventDefault();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const modal = event.currentTarget.querySelector(".dict-modal");
+  const focusable = [...modal.querySelectorAll('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
+
+window.addEventListener("beforeunload", (event) => {
+  if (!state.pendingConfigChanges) return;
+  event.preventDefault();
+  event.returnValue = "";
 });
 
 switchPage(state.activePage);
 
-Promise.all([loadOperations(), fetchSnapshot()]).catch((error) => {
+const initialSectionLoad = state.activePage === "config"
+  ? loadConfigurationPage()
+  : state.activePage === "sources"
+    ? loadSourcesPage()
+    : Promise.resolve();
+
+Promise.all([loadOperations(), fetchSnapshot(), initialSectionLoad]).catch((error) => {
   const readyBadge = document.getElementById("readyBadge");
   readyBadge.className = "badge badge-bad";
   readyBadge.textContent = "error";
@@ -1882,6 +2693,8 @@ state.endpoints = [];
 state.sourcesLoaded = false;
 state.editingEndpointId = null;
 state.editingEndpoint = null;
+state.pendingDeleteEndpointId = null;
+state.endpointModalReturnFocus = null;
 
 function setSourcesStatus(message, tone = "info") {
   const element = document.getElementById("sourcesStatus");
@@ -1894,7 +2707,10 @@ function setSourcesStatus(message, tone = "info") {
 async function loadSourcesPage() {
   setSourcesStatus("Загрузка списка источников...", "info");
   try {
-    const response = await fetchJson("/api/config/endpoints");
+    const [response] = await Promise.all([
+      fetchJson("/api/config/endpoints"),
+      fetchSnapshot().catch(() => state.snapshot),
+    ]);
     state.endpoints = Array.isArray(response.endpoints) ? response.endpoints : [];
     state.sourcesLoaded = true;
     setSourcesStatus("", "info");
@@ -1909,11 +2725,42 @@ function getEndpointConnectionStatus(endpointId) {
   return state.snapshot.connections.find((c) => c.endpoint_id === endpointId) || null;
 }
 
+function endpointStatusPresentation(endpoint, connection) {
+  if (!endpoint.enabled) {
+    return { value: "disabled", text: "Выключен", hint: "Подключение отключено в конфигурации" };
+  }
+  const value = connection?.state || "unknown";
+  const labels = {
+    connected: "Подключён",
+    disconnected: "Отключён",
+    reconnecting: "Переподключение",
+    connecting: "Подключение",
+    degraded: "Нестабильно",
+    failed: "Ошибка",
+    unknown: "Нет данных",
+  };
+  const phaseLabels = {
+    discovery: "Поиск endpoint",
+    session: "Открытие сессии",
+    subscriptions: "Создание подписок",
+    monitoring: "Получение данных",
+  };
+  return {
+    value,
+    text: labels[value] || value,
+    hint: phaseLabels[connection?.connection_phase] || connection?.connection_phase || "Состояние ещё не получено",
+  };
+}
+
 function renderSourcesList() {
   const root = document.getElementById("endpointsList");
   if (!root) return;
   if (!state.endpoints.length) {
-    root.innerHTML = `<div class="tree-empty">Источники не настроены. Нажмите «+ Добавить источник».</div>`;
+    root.innerHTML = `
+      <div class="tree-empty">
+        <strong>Источники пока не настроены.</strong><br />
+        Добавьте профиль подключения к OPC UA серверу.
+      </div>`;
     return;
   }
   root.innerHTML = state.endpoints.map((ep) => renderEndpointCardHtml(ep)).join("");
@@ -1921,37 +2768,52 @@ function renderSourcesList() {
   for (const editBtn of root.querySelectorAll("[data-edit-endpoint]")) {
     editBtn.addEventListener("click", () => {
       const ep = state.endpoints.find((e) => e.id === editBtn.dataset.editEndpoint);
-      if (ep) showEndpointForm(ep);
+      if (ep) {
+        state.pendingDeleteEndpointId = null;
+        showEndpointForm(ep);
+      }
     });
   }
   for (const delBtn of root.querySelectorAll("[data-delete-endpoint]")) {
-    delBtn.addEventListener("click", async () => {
-      const id = delBtn.dataset.deleteEndpoint;
-      if (
-        !confirm(
-          `Удалить источник «${id}»?\n\nВсе ноды этого источника будут автоматически удалены из конфигурации клиента.`,
-        )
-      )
-        return;
-      await deleteEndpoint(id, delBtn);
+    delBtn.addEventListener("click", () => {
+      state.pendingDeleteEndpointId = delBtn.dataset.deleteEndpoint;
+      renderSourcesList();
+      root.querySelector(`[data-confirm-delete-endpoint="${CSS.escape(state.pendingDeleteEndpointId)}"]`)?.focus();
     });
+  }
+  for (const cancelBtn of root.querySelectorAll("[data-cancel-delete-endpoint]")) {
+    cancelBtn.addEventListener("click", () => {
+      state.pendingDeleteEndpointId = null;
+      renderSourcesList();
+    });
+  }
+  for (const confirmBtn of root.querySelectorAll("[data-confirm-delete-endpoint]")) {
+    confirmBtn.addEventListener("click", () => deleteEndpoint(confirmBtn.dataset.confirmDeleteEndpoint, confirmBtn));
   }
 }
 
 function renderEndpointCardHtml(ep) {
   const connStatus = getEndpointConnectionStatus(ep.id);
-  const stateValue = connStatus?.state || (ep.enabled ? "unknown" : "disabled");
-  const badgeClass = ep.enabled ? statusBadge(stateValue, connStatus?.connected) : "badge-muted";
-  const badgeText = ep.enabled ? stateValue || "unknown" : "disabled";
-  const authText =
-    ep.auth?.mode === "username_password" ? `user: ${ep.auth?.username || "—"}` : "anonymous";
+  const presentation = endpointStatusPresentation(ep, connStatus);
+  const badgeClass = ep.enabled ? statusBadge(presentation.value, connStatus?.connected) : "badge-muted";
+  const authLabels = {
+    anonymous: "Anonymous",
+    username_password: `Логин: ${ep.auth?.username || "не задан"}`,
+    certificate: "Сертификат",
+  };
+  const authText = authLabels[ep.auth?.mode] || ep.auth?.mode || "Anonymous";
   const lastError = connStatus?.last_error || "";
+  const security = `${ep.security_policy || "None"} / ${ep.security_mode || "None"}`;
+  const pendingDelete = state.pendingDeleteEndpointId === ep.id;
   return `
     <article class="endpoint-card">
       <div class="endpoint-card-header">
         <div class="endpoint-card-main">
-          <span class="badge ${badgeClass}">${escapeHtml(badgeText)}</span>
-          <strong class="endpoint-id">${escapeHtml(ep.id)}</strong>
+          <span class="badge ${badgeClass}">${escapeHtml(presentation.text)}</span>
+          <div class="endpoint-title-block">
+            <strong class="endpoint-id">${escapeHtml(ep.id)}</strong>
+            <span class="endpoint-state-hint">${escapeHtml(presentation.hint)}</span>
+          </div>
         </div>
         <div class="endpoint-card-actions">
           <button class="btn" type="button" data-edit-endpoint="${escapeHtml(ep.id)}">Изменить</button>
@@ -1960,25 +2822,48 @@ function renderEndpointCardHtml(ep) {
       </div>
       <div class="endpoint-card-body">
         <div class="endpoint-url mono">${escapeHtml(ep.url)}</div>
-        <div class="endpoint-meta">
-          <span>Auth: ${escapeHtml(authText)}</span>
-          ${ep.metadata?.source_id ? `<span>Source: ${escapeHtml(ep.metadata.source_id)}</span>` : ""}
-          ${ep.metadata?.owner_id ? `<span>Owner: ${escapeHtml(ep.metadata.owner_type || "")} / ${escapeHtml(ep.metadata.owner_id)}</span>` : ""}
-          ${connStatus?.reconnect_attempts ? `<span>Reconnects: ${connStatus.reconnect_attempts}</span>` : ""}
-          ${lastError ? `<span class="endpoint-error">Error: ${escapeHtml(lastError)}</span>` : ""}
-        </div>
+        <span class="endpoint-connection-detail">${escapeHtml(authText)}</span>
+        <span class="endpoint-connection-detail">${escapeHtml(security)}</span>
+        ${lastError ? `<div class="endpoint-error"><strong>Ошибка подключения:</strong> ${escapeHtml(lastError)}</div>` : ""}
       </div>
+      ${pendingDelete ? `
+        <div class="endpoint-delete-confirm" role="alert">
+          <span>Будут удалены источник и все его ноды из конфигурации.</span>
+          <button class="btn" type="button" data-cancel-delete-endpoint="${escapeHtml(ep.id)}">Отмена</button>
+          <button class="btn btn-danger" type="button" data-confirm-delete-endpoint="${escapeHtml(ep.id)}">Удалить безвозвратно</button>
+        </div>` : ""}
     </article>
   `;
 }
 
+function setEndpointFormError(message = "") {
+  const element = document.getElementById("endpointFormError");
+  element.textContent = message;
+  element.classList.toggle("hidden", !message);
+}
+
+function updateEndpointAuthFields() {
+  const mode = document.getElementById("efAuthMode").value;
+  const editing = Boolean(state.editingEndpointId);
+  document.getElementById("efAuthFields").classList.toggle("hidden", mode !== "username_password");
+  document.getElementById("efCertificateFields").classList.toggle("hidden", mode !== "certificate");
+  document.getElementById("efPasswordRequired").classList.toggle("hidden", editing);
+  document.getElementById("efPasswordHint").textContent = editing
+    ? "Оставьте пустым, чтобы сохранить текущий пароль."
+    : "Обязателен для нового источника.";
+}
+
 function showEndpointForm(endpoint = null) {
+  state.endpointModalReturnFocus = document.activeElement;
   state.editingEndpointId = endpoint ? endpoint.id : null;
   state.editingEndpoint = endpoint ? clone(endpoint) : null;
 
   document.getElementById("endpointFormTitle").textContent = endpoint
-    ? `Редактирование: ${endpoint.id}`
-    : "Новый источник";
+    ? `Настройки «${endpoint.id}»`
+    : "Новое подключение";
+  document.getElementById("endpointFormHint").textContent = endpoint
+    ? "Измените параметры подключения к OPC UA серверу."
+    : "Создайте профиль подключения к OPC UA серверу.";
 
   const efId = document.getElementById("efId");
   efId.value = endpoint?.id || "";
@@ -1991,61 +2876,138 @@ function showEndpointForm(endpoint = null) {
   document.getElementById("efAuthMode").value = authMode;
   document.getElementById("efUsername").value = endpoint?.auth?.username || "";
   document.getElementById("efPassword").value = "";
-  document.getElementById("efAuthFields").classList.toggle("hidden", authMode !== "username_password");
+  document.getElementById("efCertificatePath").value = endpoint?.auth?.certificate_path || "";
+  document.getElementById("efPrivateKeyPath").value = endpoint?.auth?.private_key_path || "";
 
-  document.getElementById("efSourceId").value = endpoint?.metadata?.source_id || "";
-  document.getElementById("efOwnerType").value = endpoint?.metadata?.owner_type || "";
-  document.getElementById("efOwnerId").value = endpoint?.metadata?.owner_id || "";
-  document.getElementById("efSourceSystemId").value = endpoint?.metadata?.source_system_id || "";
-  document.getElementById("efSiteId").value = endpoint?.metadata?.site_id || "";
-  document.getElementById("efAssetId").value = endpoint?.metadata?.asset_id || "";
-  document.getElementById("efWellId").value = endpoint?.metadata?.well_id || "";
+  document.getElementById("efSecurityPolicy").value = endpoint?.security_policy || "None";
+  document.getElementById("efSecurityMode").value = endpoint?.security_mode || "None";
+  document.getElementById("efSessionTimeout").value = endpoint?.session_timeout_ms ?? 60000;
+  document.getElementById("efRequestTimeout").value = endpoint?.request_timeout_seconds ?? 10;
+
+  setEndpointFormError("");
+  for (const field of document.querySelectorAll("#endpointForm .field-error, #endpointForm [aria-invalid]")) {
+    field.classList.remove("field-error");
+    field.removeAttribute("aria-invalid");
+  }
+  updateEndpointAuthFields();
 
   const wrap = document.getElementById("endpointFormWrap");
   wrap.classList.remove("hidden");
-  wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+  document.body.classList.add("endpoint-modal-open");
+  window.setTimeout(() => (endpoint ? document.getElementById("efUrl") : efId).focus(), 0);
 }
 
 function hideEndpointForm() {
+  const returnFocus = state.endpointModalReturnFocus;
   state.editingEndpointId = null;
   state.editingEndpoint = null;
+  state.endpointModalReturnFocus = null;
   document.getElementById("endpointFormWrap").classList.add("hidden");
+  document.body.classList.remove("endpoint-modal-open");
   document.getElementById("endpointForm").reset();
   document.getElementById("efAuthFields").classList.add("hidden");
+  document.getElementById("efCertificateFields").classList.add("hidden");
+  setEndpointFormError("");
+  if (returnFocus instanceof HTMLElement && document.contains(returnFocus)) returnFocus.focus();
+}
+
+function defaultEndpointMetadata(endpointId) {
+  return {
+    source_id: endpointId,
+    id_source: null,
+    source_system_id: null,
+    owner_type: "opcua_endpoint",
+    owner_id: endpointId,
+    site_id: null,
+    asset_id: null,
+    well_id: null,
+    tags: [],
+  };
 }
 
 function collectEndpointFormData() {
   const authMode = document.getElementById("efAuthMode").value;
   const password = document.getElementById("efPassword").value;
-  const auth = { mode: authMode };
+  const base = state.editingEndpoint ? clone(state.editingEndpoint) : {};
+  const auth = { ...(base.auth || {}), mode: authMode };
   if (authMode === "username_password") {
-    auth.username = document.getElementById("efUsername").value || null;
+    auth.username = document.getElementById("efUsername").value.trim() || null;
     auth.password = password || null;
+    auth.certificate_path = null;
+    auth.private_key_path = null;
+  } else if (authMode === "certificate") {
+    auth.username = null;
+    auth.password = null;
+    auth.certificate_path = document.getElementById("efCertificatePath").value.trim() || null;
+    auth.private_key_path = document.getElementById("efPrivateKeyPath").value.trim() || null;
+  } else {
+    auth.username = null;
+    auth.password = null;
+    auth.certificate_path = null;
+    auth.private_key_path = null;
   }
 
-  const metadata = {
-    source_id: document.getElementById("efSourceId").value.trim(),
-    owner_type: document.getElementById("efOwnerType").value.trim(),
-    owner_id: document.getElementById("efOwnerId").value.trim(),
-  };
-  const sourceSystemId = document.getElementById("efSourceSystemId").value.trim();
-  const siteId = document.getElementById("efSiteId").value.trim();
-  const assetId = document.getElementById("efAssetId").value.trim();
-  const wellId = document.getElementById("efWellId").value.trim();
-  if (sourceSystemId) metadata.source_system_id = sourceSystemId;
-  if (siteId) metadata.site_id = siteId;
-  if (assetId) metadata.asset_id = assetId;
-  if (wellId) metadata.well_id = wellId;
+  const endpointId = document.getElementById("efId").value.trim();
+  const metadata = base.metadata ? clone(base.metadata) : defaultEndpointMetadata(endpointId);
 
-  const base = state.editingEndpoint ? clone(state.editingEndpoint) : {};
   return {
     ...base,
-    id: document.getElementById("efId").value.trim(),
+    id: endpointId,
     url: document.getElementById("efUrl").value.trim(),
     enabled: document.getElementById("efEnabled").checked,
+    security_policy: document.getElementById("efSecurityPolicy").value.trim() || "None",
+    security_mode: document.getElementById("efSecurityMode").value,
+    session_timeout_ms: Number(document.getElementById("efSessionTimeout").value),
+    request_timeout_seconds: Number(document.getElementById("efRequestTimeout").value),
     auth,
     metadata,
   };
+}
+
+function validateEndpointForm(data) {
+  const errors = [];
+  const addError = (fieldId, message) => {
+    const field = document.getElementById(fieldId);
+    field.setAttribute("aria-invalid", "true");
+    field.classList.add("field-error");
+    errors.push({ field, message });
+  };
+  for (const field of document.querySelectorAll("#endpointForm .field-error")) {
+    field.classList.remove("field-error");
+    field.removeAttribute("aria-invalid");
+  }
+  if (!data.id) addError("efId", "Укажите ID источника.");
+  else if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(data.id)) {
+    addError("efId", "ID может содержать латинские буквы, цифры, точку, дефис и подчёркивание.");
+  }
+  if (!data.url) addError("efUrl", "Укажите URL OPC UA сервера.");
+  else if (!/^opc\.tcp:\/\/[^\s/]+(?::\d+)?(?:\/.*)?$/i.test(data.url)) {
+    addError("efUrl", "URL должен начинаться с opc.tcp:// и содержать адрес сервера.");
+  }
+  if (data.auth.mode === "username_password") {
+    if (!data.auth.username) addError("efUsername", "Укажите имя пользователя.");
+    if (!state.editingEndpointId && !data.auth.password) addError("efPassword", "Укажите пароль для нового источника.");
+  }
+  if (data.auth.mode === "certificate") {
+    if (!data.auth.certificate_path) addError("efCertificatePath", "Укажите путь к сертификату внутри контейнера клиента.");
+    if (!data.auth.private_key_path) addError("efPrivateKeyPath", "Укажите путь к закрытому ключу внутри контейнера клиента.");
+  }
+  if (!Number.isFinite(data.session_timeout_ms) || data.session_timeout_ms < 1000) {
+    addError("efSessionTimeout", "Session timeout должен быть не меньше 1000 мс.");
+  }
+  if (!Number.isFinite(data.request_timeout_seconds) || data.request_timeout_seconds < 0.1) {
+    addError("efRequestTimeout", "Request timeout должен быть не меньше 0,1 с.");
+  }
+  if (data.security_policy === "None" && data.security_mode !== "None") {
+    addError("efSecurityMode", "Для Security policy None режим также должен быть None.");
+  }
+  if (errors.length) {
+    setEndpointFormError(errors.map((error) => `• ${error.message}`).join("\n"));
+    errors[0].field.focus();
+    return false;
+  }
+  setEndpointFormError("");
+  return true;
 }
 
 async function submitEndpointForm(event) {
@@ -2053,14 +3015,7 @@ async function submitEndpointForm(event) {
   const submitBtn = document.getElementById("submitEndpointForm");
   const data = collectEndpointFormData();
 
-  if (!data.id) {
-    setSourcesStatus("ID источника обязателен.", "error");
-    return;
-  }
-  if (!data.url) {
-    setSourcesStatus("URL источника обязателен.", "error");
-    return;
-  }
+  if (!validateEndpointForm(data)) return;
   setBusyState(submitBtn, true);
   try {
     let statusMessage;
@@ -2083,6 +3038,7 @@ async function submitEndpointForm(event) {
     await loadSourcesPage();
     setSourcesStatus(statusMessage, "success");
   } catch (error) {
+    setEndpointFormError(`Не удалось сохранить источник. ${error.message}`);
     setSourcesStatus(`Ошибка сохранения: ${error.message}`, "error");
   } finally {
     setBusyState(submitBtn, false);
@@ -2093,9 +3049,9 @@ async function deleteEndpoint(endpointId, button) {
   setBusyState(button, true);
   try {
     await fetchJson(`/api/config/endpoints/${encodeURIComponent(endpointId)}`, { method: "DELETE" });
-    setSourcesStatus(`Источник «${endpointId}» удалён.`, "success");
+    state.pendingDeleteEndpointId = null;
     await loadSourcesPage();
-    await fetchSnapshot();
+    setSourcesStatus(`Источник «${endpointId}» и связанные с ним ноды удалены.`, "success");
   } catch (error) {
     setSourcesStatus(`Ошибка удаления: ${error.message}`, "error");
   } finally {
@@ -2108,20 +3064,47 @@ document.getElementById("loadSourcesButton").addEventListener("click", () => {
   withBusy(button, loadSourcesPage).catch((error) => setSourcesStatus(error.message, "error"));
 });
 document.getElementById("createEndpointButton").addEventListener("click", () => {
+  state.pendingDeleteEndpointId = null;
   showEndpointForm(null);
 });
 document.getElementById("cancelEndpointForm").addEventListener("click", () => {
   hideEndpointForm();
 });
+document.getElementById("closeEndpointForm").addEventListener("click", () => {
+  hideEndpointForm();
+});
 document.getElementById("endpointForm").addEventListener("submit", (event) => {
   submitEndpointForm(event);
 });
-document.getElementById("efAuthMode").addEventListener("change", (event) => {
-  document.getElementById("efAuthFields").classList.toggle("hidden", event.target.value !== "username_password");
+document.getElementById("efAuthMode").addEventListener("change", () => {
+  updateEndpointAuthFields();
+});
+document.getElementById("endpointForm").addEventListener("input", (event) => {
+  if (event.target.matches("input, select")) {
+    event.target.classList.remove("field-error");
+    event.target.removeAttribute("aria-invalid");
+    setEndpointFormError("");
+  }
+});
+document.getElementById("endpointFormWrap").addEventListener("keydown", (event) => {
+  if (event.key !== "Tab") return;
+  const focusable = [...event.currentTarget.querySelectorAll(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
+  )].filter((element) => !element.closest(".hidden"));
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 });
 
 setInterval(() => {
-  if (!["dashboard", "diagnostics"].includes(state.activePage)) return;
+  if (!["dashboard", "diagnostics", "sources"].includes(state.activePage)) return;
   fetchSnapshot().catch(() => undefined);
 }, 5000);
 
