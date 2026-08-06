@@ -37,6 +37,7 @@ def test_export_import_round_trip_preserves_binding_fields() -> None:
 
     assert result["accepted_rows"] == 1
     assert result["issues"] == []
+    assert result["endpoint_ids"] == ["remote-opc-server"]
     row = result["rows"][0]
     assert row["source_row"] == 5
     assert row["node_id"] == 'ns=3;s="DB  FOR  TEST"."Temperature"'
@@ -83,6 +84,19 @@ def test_import_reports_row_errors_without_rejecting_valid_rows() -> None:
         "acquisition_mode",
         "sampling_interval_ms",
     }
+
+
+def test_import_reports_all_endpoint_ids_even_when_some_rows_are_invalid() -> None:
+    content = (
+        "Endpoint;Node ID;Код параметра\n"
+        "one;ns=2;s=One;ONE\n"
+        "two;ns=2;s=Two;\n"
+    ).encode("utf-8")
+
+    result = import_bindings_table("bindings.csv", content)
+
+    assert result["endpoint_ids"] == ["one", "two"]
+    assert result["accepted_rows"] == 1
 
 
 def test_xlsx_formulas_are_rejected() -> None:

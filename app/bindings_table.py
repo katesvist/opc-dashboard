@@ -82,7 +82,7 @@ class BindingTableError(ValueError):
     pass
 
 
-def export_bindings_xlsx(nodes: list[dict[str, Any]]) -> bytes:
+def export_bindings_xlsx(nodes: list[dict[str, Any]], endpoint_id: str | None = None) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = SHEET_NAME
@@ -92,7 +92,7 @@ def export_bindings_xlsx(nodes: list[dict[str, Any]]) -> bytes:
 
     last_column = get_column_letter(len(COLUMNS))
     sheet.merge_cells(f"A1:{last_column}1")
-    sheet["A1"] = "Привязки OPC UA нод к параметрам"
+    sheet["A1"] = "Привязки OPC UA нод к параметрам" + (f" — {endpoint_id}" if endpoint_id else "")
     sheet["A1"].font = Font(size=16, bold=True, color="FFFFFF")
     sheet["A1"].fill = PatternFill("solid", fgColor="1F5F8B")
     sheet["A1"].alignment = Alignment(vertical="center")
@@ -100,7 +100,8 @@ def export_bindings_xlsx(nodes: list[dict[str, Any]]) -> bytes:
 
     sheet.merge_cells(f"A2:{last_column}2")
     sheet["A2"] = (
-        "* обязательные поля. Пустые необязательные поля будут заполнены безопасными значениями. "
+        "Таблица относится только к одному endpoint. * обязательные поля. "
+        "Пустые необязательные поля будут заполнены безопасными значениями. "
         "Импорт добавляет только новые привязки в черновик и не сохраняет их автоматически."
     )
     sheet["A2"].alignment = Alignment(wrap_text=True, vertical="center")
@@ -140,7 +141,7 @@ def export_bindings_xlsx(nodes: list[dict[str, Any]]) -> bytes:
 
     instruction_rows = [
         ["Как заполнять", "Значение"],
-        ["Endpoint *", "ID источника из дашборда, например remote-opc-server."],
+        ["Endpoint", "Один ID источника для всей таблицы, например remote-opc-server. Несколько endpoint смешивать нельзя."],
         ["Node ID *", "Точный OPC UA NodeId, например ns=3;s=\"DB\".\"Temperature\"."],
         ["Код параметра *", "Код name из Справочника параметров. Регистр и лишние пробелы исправляются при импорте."],
         ["Активна / Чтение / Запись", "Допустимы: Да/Нет, true/false, 1/0. По умолчанию: Да/Да/Нет."],
@@ -260,6 +261,7 @@ def _normalize_rows(raw_rows: list[list[Any]]) -> dict[str, Any]:
     header_index, mapping, header_warnings = _find_header(raw_rows)
     rows: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
+    endpoint_ids: set[str] = set()
 
     for source_index, raw in enumerate(raw_rows[header_index + 1 :], start=header_index + 2):
         if not any(_clean_text(value) for value in raw):
@@ -269,6 +271,8 @@ def _normalize_rows(raw_rows: list[list[Any]]) -> dict[str, Any]:
 
         item = {key: raw[column] if column < len(raw) else None for key, column in mapping.items()}
         normalized, row_issues = _normalize_item(item, source_index)
+        if normalized.get("endpoint_id"):
+            endpoint_ids.add(str(normalized["endpoint_id"]))
         if row_issues:
             issues.extend(row_issues)
         else:
@@ -280,6 +284,7 @@ def _normalize_rows(raw_rows: list[list[Any]]) -> dict[str, Any]:
         "warnings": header_warnings,
         "source_rows": max(0, len(raw_rows) - header_index - 1),
         "accepted_rows": len(rows),
+        "endpoint_ids": sorted(endpoint_ids),
     }
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import socket
 from base64 import b64encode
 from dataclasses import dataclass
@@ -549,24 +550,52 @@ async def bindings_template() -> FileResponse:
 @app.post("/api/config/bindings/export")
 async def export_bindings(payload: dict[str, Any]) -> Response:
     nodes = payload.get("nodes")
+    endpoint_id = str(payload.get("endpoint_id") or "").strip()
     if not isinstance(nodes, list):
         raise HTTPException(status_code=422, detail="nodes list is required")
+    if not endpoint_id:
+        raise HTTPException(status_code=422, detail="Выберите endpoint для экспорта.")
+    if not nodes:
+        raise HTTPException(status_code=422, detail=f"У endpoint «{endpoint_id}» нет привязок для экспорта.")
     if len(nodes) > 20_000:
         raise HTTPException(status_code=422, detail="Too many nodes for one export (maximum 20000).")
-    content = await asyncio.to_thread(export_bindings_xlsx, nodes)
+    node_endpoints = {str(node.get("endpoint_id") or "").strip() for node in nodes if isinstance(node, dict)}
+    if node_endpoints != {endpoint_id}:
+        raise HTTPException(
+            status_code=422,
+            detail="Экспорт может содержать привязки только одного выбранного endpoint.",
+        )
+    content = await asyncio.to_thread(export_bindings_xlsx, nodes, endpoint_id)
     timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    safe_endpoint = re.sub(r"[^A-Za-z0-9._-]+", "-", endpoint_id).strip("-") or "endpoint"
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="opcua-bindings-{timestamp}.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="opcua-bindings-{safe_endpoint}-{timestamp}.xlsx"'},
     )
 
 
 @app.post("/api/config/bindings/import")
-async def import_bindings(file: UploadFile = File(...)) -> dict[str, Any]:
+async def import_bindings(file: UploadFile = File(...), endpoint_id: str | None = None) -> dict[str, Any]:
     content = await file.read(10 * 1024 * 1024 + 1)
     try:
-        return await asyncio.to_thread(import_bindings_table, file.filename or "bindings.xlsx", content)
+        result = await asyncio.to_thread(import_bindings_table, file.filename or "bindings.xlsx", content)
+        selected_endpoint = str(endpoint_id or "").strip()
+        table_endpoints = {str(value).strip() for value in result.get("endpoint_ids", []) if str(value).strip()}
+        if len(table_endpoints) > 1:
+            raise BindingTableError(
+                "Таблица содержит несколько endpoint. Одна таблица привязок может относиться только к одному источнику."
+            )
+        if selected_endpoint and table_endpoints and table_endpoints != {selected_endpoint}:
+            table_endpoint = next(iter(table_endpoints))
+            raise BindingTableError(
+                f"Таблица относится к endpoint «{table_endpoint}», а в рабочей области выбран «{selected_endpoint}»."
+            )
+        if selected_endpoint:
+            for row in result.get("rows", []):
+                row["endpoint_id"] = selected_endpoint
+            result["endpoint_id"] = selected_endpoint
+        return result
     except BindingTableError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

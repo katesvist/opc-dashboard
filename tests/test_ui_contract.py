@@ -145,6 +145,21 @@ def test_sources_use_compact_cards_and_modal_editor() -> None:
     assert '["dashboard", "diagnostics", "sources"]' in source
 
 
+def test_bindings_export_and_import_are_scoped_to_selected_endpoint() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    export_block = source[source.index("async function exportBindings") : source.index("function buildImportedNode")]
+    import_block = source[source.index("function mergeImportedBindings") : source.index('document.getElementById("refreshButton")')]
+
+    assert 'document.getElementById("configEndpoint")?.value' in export_block
+    assert "state.draftNodes.filter((node) => node.endpoint_id === selectedEndpoint)" in export_block
+    assert "JSON.stringify({ endpoint_id: selectedEndpoint, nodes: endpointNodes })" in export_block
+    assert "state.draftNodes.length" not in export_block
+    assert "result.endpoint_ids" in import_block
+    assert "importedEndpoints.size > 1" in import_block
+    assert "tableEndpoint !== selectedEndpoint" in import_block
+    assert "new URLSearchParams({ endpoint_id: selectedEndpoint })" in import_block
+
+
 def test_group_nodes_are_created_from_node_id_not_browse_name() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     block = source[source.index("function addBrowseNodeToDraft") : source.index("function addGroupFromItems")]

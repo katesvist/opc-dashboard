@@ -2313,18 +2313,25 @@ async function downloadBindingsTemplate() {
 }
 
 async function exportBindings() {
-  if (!state.draftNodes.length) {
-    setConfigStatus("В рабочей области нет привязок для экспорта.", "warn");
+  const selectedEndpoint = document.getElementById("configEndpoint")?.value || "";
+  if (!selectedEndpoint) {
+    setConfigStatus("Выберите endpoint, привязки которого нужно экспортировать.", "warn");
+    return;
+  }
+  const endpointNodes = state.draftNodes.filter((node) => node.endpoint_id === selectedEndpoint);
+  if (!endpointNodes.length) {
+    setConfigStatus(`У endpoint «${selectedEndpoint}» нет привязок для экспорта.`, "warn");
     return;
   }
   const response = await fetch("/api/config/bindings/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ nodes: state.draftNodes }),
+    body: JSON.stringify({ endpoint_id: selectedEndpoint, nodes: endpointNodes }),
   });
   if (!response.ok) throw new Error(await response.text());
-  await downloadResponseBlob(response, "opcua-bindings.xlsx");
-  setConfigStatus(`Экспортировано ${state.draftNodes.length} привязок из текущей рабочей области.`, "success");
+  const safeEndpoint = selectedEndpoint.replace(/[^a-z0-9._-]+/gi, "-");
+  await downloadResponseBlob(response, `opcua-bindings-${safeEndpoint}.xlsx`);
+  setConfigStatus(`Экспортировано ${endpointNodes.length} привязок endpoint «${selectedEndpoint}».`, "success");
 }
 
 function buildImportedNode(row, endpointId, param) {
@@ -2370,6 +2377,27 @@ function mergeImportedBindings(result) {
     return;
   }
   const selectedEndpoint = document.getElementById("configEndpoint")?.value || "";
+  if (!selectedEndpoint) {
+    setConfigStatus("Перед импортом выберите endpoint для рабочей области.", "error");
+    return;
+  }
+  const importedEndpoints = new Set(
+    (result.endpoint_ids || (result.rows || []).map((row) => row.endpoint_id))
+      .map((endpointId) => String(endpointId || "").trim())
+      .filter(Boolean),
+  );
+  if (importedEndpoints.size > 1) {
+    setConfigStatus("Импорт отменён: таблица содержит несколько endpoint. Одна таблица может относиться только к одному источнику.", "error");
+    return;
+  }
+  const [tableEndpoint] = importedEndpoints;
+  if (tableEndpoint && tableEndpoint !== selectedEndpoint) {
+    setConfigStatus(
+      `Импорт отменён: таблица относится к endpoint «${tableEndpoint}», а сейчас выбран «${selectedEndpoint}».`,
+      "error",
+    );
+    return;
+  }
   const knownEndpoints = new Set(
     [...document.querySelectorAll("#configEndpoint option")].map((option) => option.value).filter(Boolean),
   );
@@ -2385,7 +2413,7 @@ function mergeImportedBindings(result) {
   let skipped = 0;
 
   for (const row of result.rows || []) {
-    const endpointId = String(row.endpoint_id || selectedEndpoint).trim();
+    const endpointId = selectedEndpoint;
     const param = dictByCode.get(normalizedBindingValue(row.parameter_code));
     const rowLabel = row.source_row
       ? `строка ${row.source_row} (${row.node_id || "NodeId не указан"})`
@@ -2453,9 +2481,15 @@ function mergeImportedBindings(result) {
 
 async function importBindingsFile(file) {
   if (!file) return;
+  const selectedEndpoint = document.getElementById("configEndpoint")?.value || "";
+  if (!selectedEndpoint) {
+    setConfigStatus("Перед импортом выберите endpoint для рабочей области.", "warn");
+    return;
+  }
   const formData = new FormData();
   formData.append("file", file);
-  const response = await fetch("/api/config/bindings/import", { method: "POST", body: formData });
+  const params = new URLSearchParams({ endpoint_id: selectedEndpoint });
+  const response = await fetch(`/api/config/bindings/import?${params.toString()}`, { method: "POST", body: formData });
   if (!response.ok) {
     let message = await response.text();
     try {
@@ -2564,6 +2598,11 @@ document.getElementById("bindingsExportButton")?.addEventListener("click", (even
   withBusy(event.currentTarget, exportBindings).catch((error) => setConfigStatus(error.message, "error"));
 });
 document.getElementById("bindingsImportButton")?.addEventListener("click", () => {
+  const selectedEndpoint = document.getElementById("configEndpoint")?.value || "";
+  if (!selectedEndpoint) {
+    setConfigStatus("Перед импортом выберите endpoint для рабочей области.", "warn");
+    return;
+  }
   document.getElementById("bindingsFileInput")?.click();
 });
 document.getElementById("bindingsFileInput")?.addEventListener("change", (event) => {
